@@ -1,0 +1,35 @@
+**Do them in this exact order, and here's why:**
+
+---
+
+**First: #2 — Deploy to a public URL**
+
+Do this before anything else, even before bug fixes. Here's the reason: you cannot properly playtest a family multiplayer game by yourself on one device. You need your actual family sitting down with real devices hitting a real URL simultaneously. Without a public URL, every "bug fix" you do in #1 is untested in real conditions. Deploy first, then everything else becomes testable.
+
+It also takes 10 minutes in Replit and unblocks all future work immediately.
+
+---
+
+**Second: #4 — Sound effects**
+
+Do this before the bug fixes. This sounds counterintuitive but it's right for a specific reason — sound effects make bugs visible. When a torpedo fires and you hear nothing, you know something didn't trigger. When the hull drops and the damage sound plays, you know that event fired. Sound is a free debugging layer that makes the playtest session in #1 dramatically more productive. It also makes the game feel real enough that your family will actually engage with it seriously during the playtest rather than treating it as a prototype.
+
+This is also the fastest item on the list — the system is already wired, it's just a matter of calling `playSound()` in the right places.
+
+---
+
+**Third: #1 — End-to-end playtest and bug fixes**
+
+Now you have a public URL, real devices, and sound feedback. Sit your family down and play M01 start to finish. Then M02. Write down every moment where someone is confused, something doesn't fire, or the game breaks. Fix those specific things. This is the only way to find real bugs — you will not find them by reading code.
+
+---
+
+**Fourth: #3 — Station onboarding hints**
+
+Do this last because the playtest in #1 will tell you exactly which stations need hints and what those hints should say. If you build onboarding tooltips before playtesting, you'll build them for the wrong problems. Let the family show you where they're confused, then build the hints that address those exact moments.
+
+---
+
+**The one-line summary for Replit:**
+
+*"Deploy to public URL first, then wire the sound effects, then we'll playtest as a family and bring you a bug list, then we'll build onboarding hints based on what confused people."*

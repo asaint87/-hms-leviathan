@@ -1,0 +1,41 @@
+These are exactly the right questions. Here's how to answer each one:
+
+**1. Scope — Start focused, not complete.**
+
+Build in this order, stop after each phase works:
+- Phase 1: Lobby screen + all 5 station screens + WebSocket multiplayer (real-time shared state). Use the HTML demo as the visual reference for every screen. This is the entire first build.
+- Do NOT build missions, avatar, levels, or accounts yet. Get the family playing a real game first.
+
+Tell Replit: *"Build Phase 1 only: Expo app with lobby, all 5 station screens matching the HTML demo visually, and WebSocket real-time multiplayer with shared game state. Stop there."*
+
+**2. Backend — Integrate into the existing API server.**
+
+The existing server already handles routing. Add the WebSocket handler to it rather than spinning up a second process. Replit runs one server per project cleanly. The WebSocket endpoint goes at `/api/ws` alongside any existing HTTP routes.
+
+Tell Replit: *"Add the WebSocket game server into the existing API server file. WebSocket at `/api/ws`, HTTP routes alongside it in the same Node process."*
+
+**3. Avatar — Set it aside.**
+
+The avatar creator requires Claude API, camera permissions, base64 encoding, and a backend route. It is a self-contained feature that adds zero gameplay value in Phase 1. The two files (`replit_avatar_route.js` and `AvatarCreator.tsx`) are ready and waiting — drop them in during Phase 2.
+
+Tell Replit: *"Skip avatar creator for now. The backend route and React Native component are already written and will be added in Phase 2."*
+
+**4. Existing code — Build fresh from the HTML demo and spec.**
+
+The workspace being empty is fine. The spec and HTML demo together contain everything needed to build from scratch. The references to `GameContext.tsx`, `colors.ts` etc. in the spec are the target file structure to create, not files that already exist.
+
+Tell Replit: *"Build the entire Expo mobile app fresh. The spec defines the file structure to create. The HTML demo defines how every screen should look and behave. Treat both as the blueprint."*
+
+**5. Platform — Expo app that runs on both mobile and web.**
+
+Expo handles this natively with one codebase. The game needs to run on tablets and phones (iOS primarily, App Store is the goal) but also in the browser for testing and for families who want to play on a laptop. Expo's web target gives you both without separate codebases.
+
+Tell Replit: *"Build as an Expo app targeting iOS/Android/web. The primary experience is tablet in landscape orientation. The web build is for testing and families without tablets. Lock game screens to landscape, allow portrait for lobby only."*
+
+---
+
+**The one thing to add that Replit didn't ask about:**
+
+Tell Replit explicitly: *"The HTML demo file (`submarine-game-demo.html`) is the visual and interaction reference for every station screen. When in doubt about how something should look or work, the demo is the answer. Pay particular attention to: the two-column layout (visual left, controls right), the canonical bearing math function `bearingRangeToOffset()` which must be used identically in the Captain radar, Sonar scope, and Strategic Map, and the shared GAME_CONTACTS state that drives all three displays simultaneously."*
+
+That last point about the bearing math is the one thing most likely to cause the mirroring bug to reappear if Replit doesn't read it carefully. Flag it explicitly.
