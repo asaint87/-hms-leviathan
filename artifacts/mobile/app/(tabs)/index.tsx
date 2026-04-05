@@ -30,6 +30,15 @@ const ROLES: { key: RoleKey; icon: string; desc: string }[] = [
   { key: 'w', icon: 'target', desc: 'Lock on & fire' },
 ];
 
+function getApiBase(): string {
+  const domain = process.env.EXPO_PUBLIC_DOMAIN;
+  if (domain) return `https://${domain}`;
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.host}`;
+  }
+  return 'http://localhost:3000';
+}
+
 export default function LobbyScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -51,6 +60,8 @@ export default function LobbyScreen() {
   const { stop } = useThemeMusic();
   const [joinModalVisible, setJoinModalVisible] = useState(false);
   const [joinCode, setJoinCode] = useState('');
+  const [generatingAvatar, setGeneratingAvatar] = useState(false);
+  const [rawSelfieBase64, setRawSelfieBase64] = useState<string | null>(null);
   const params = useLocalSearchParams<{ join?: string }>();
 
   const qrJoinCode = params.join?.toUpperCase() ?? '';
@@ -87,17 +98,63 @@ export default function LobbyScreen() {
           });
 
       if (!result.canceled && result.assets[0]) {
-        const resized = await ImageManipulator.manipulateAsync(
+        // Keep a higher-res version for AI generation
+        const forAI = await ImageManipulator.manipulateAsync(
+          result.assets[0].uri,
+          [{ resize: { width: 512, height: 512 } }],
+          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        );
+        // Thumbnail for display/transmission
+        const thumb = await ImageManipulator.manipulateAsync(
           result.assets[0].uri,
           [{ resize: { width: 80, height: 80 } }],
           { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG, base64: true }
         );
-        if (resized.base64) {
-          setMyAvatar(`data:image/jpeg;base64,${resized.base64}`);
+        if (thumb.base64) {
+          setMyAvatar(`data:image/jpeg;base64,${thumb.base64}`);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+        if (forAI.base64) {
+          setRawSelfieBase64(forAI.base64);
         }
       }
     } catch {
+    }
+  };
+
+  const generateCartoonAvatar = async () => {
+    if (!rawSelfieBase64) return;
+    setGeneratingAvatar(true);
+    try {
+      const resp = await fetch(`${getApiBase()}/api/generate-avatar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          photoBase64: rawSelfieBase64,
+          mediaType: 'image/jpeg',
+        }),
+      });
+      const json = await resp.json();
+      if (json.success && json.imageBase64) {
+        // Resize the AI image down for transmission
+        const uri = `data:image/png;base64,${json.imageBase64}`;
+        const resized = await ImageManipulator.manipulateAsync(
+          uri,
+          [{ resize: { width: 128, height: 128 } }],
+          { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        );
+        if (resized.base64) {
+          setMyAvatar(`data:image/jpeg;base64,${resized.base64}`);
+        }
+        setRawSelfieBase64(null);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        Alert.alert('Generation Failed', json.error || 'Could not generate portrait. Try again.');
+      }
+    } catch (e: any) {
+      Alert.alert('Connection Error', 'Could not reach the server. Check your connection.');
+    } finally {
+      setGeneratingAvatar(false);
     }
   };
 
@@ -185,6 +242,27 @@ export default function LobbyScreen() {
             returnKeyType="done"
           />
         </View>
+        {rawSelfieBase64 && myAvatar && (
+          <TouchableOpacity
+            style={[styles.cartoonBtn, { borderColor: rc.primary, backgroundColor: rc.bg }, generatingAvatar && styles.disabled]}
+            onPress={generateCartoonAvatar}
+            disabled={generatingAvatar}
+            activeOpacity={0.8}
+          >
+            {generatingAvatar ? (
+              <Text style={[styles.cartoonBtnText, { color: rc.primary }]}>
+                GENERATING PORTRAIT...
+              </Text>
+            ) : (
+              <>
+                <Ionicons name="sparkles" size={16} color={rc.primary} />
+                <Text style={[styles.cartoonBtnText, { color: rc.primary }]}>
+                  GENERATE CREW PORTRAIT
+                </Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       <View style={styles.card}>
@@ -435,6 +513,21 @@ const styles = StyleSheet.create({
     fontFamily: 'Orbitron_400Regular',
     fontSize: 6,
     letterSpacing: 1,
+  },
+  cartoonBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderRadius: 8,
+  },
+  cartoonBtnText: {
+    fontFamily: 'Orbitron_700Bold',
+    fontSize: 10,
+    letterSpacing: 2,
   },
   inputFlex: {
     flex: 1,
