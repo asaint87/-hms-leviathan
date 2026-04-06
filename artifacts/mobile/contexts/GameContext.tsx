@@ -107,6 +107,7 @@ interface GameContextValue {
   voteState: VoteState | null;
   actionLog: ActionLogEntry[];
   lastTorpedoEvent: TorpedoEvent | null;
+  crewReady: RoleKey[];
   error: string | null;
 
   setMyName: (name: string) => void;
@@ -127,6 +128,7 @@ interface GameContextValue {
   rearmTorps: () => void;
   setCooling: (level: number) => void;
   castVote: (vote: string) => void;
+  reportReady: () => void;
 }
 
 const GameContext = createContext<GameContextValue | null>(null);
@@ -165,6 +167,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [voteState, setVoteState] = useState<VoteState | null>(null);
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [lastTorpedoEvent, setLastTorpedoEvent] = useState<TorpedoEvent | null>(null);
+  const [crewReady, setCrewReady] = useState<RoleKey[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -234,10 +237,17 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             const newState = msg['state'] as GameState;
             setGameState(newState);
             if (msg['players']) setPlayers(msg['players'] as PlayerInfo[]);
+            if (msg['crewReady']) setCrewReady(msg['crewReady'] as RoleKey[]);
             if (prevHullRef.current > 0 && newState.hull < prevHullRef.current - 5) {
               playSound('hullDamage');
             }
             prevHullRef.current = newState.hull;
+            break;
+          }
+          case 'MISSION_STEP': {
+            // Step advanced — crewReady was cleared on server
+            setCrewReady([]);
+            addLog(`Mission advancing to step ${(msg['missionStep'] as number) + 1}.`, 'info');
             break;
           }
           case 'CRISIS_START':
@@ -352,6 +362,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setVoteState(null);
     setActionLog([]);
     setLastTorpedoEvent(null);
+    setCrewReady([]);
     playSound('alarmStop');
   }, [send]);
 
@@ -387,6 +398,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     playSound('click');
   }, [send]);
   const setCooling = useCallback((level: number) => send({ type: 'SET_COOLING', level }), [send]);
+  const reportReady = useCallback(() => send({ type: 'CREW_READY' }), [send]);
   const castVote = useCallback(
     (vote: string) => {
       send({ type: 'CAST_VOTE', vote });
@@ -410,6 +422,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         voteState,
         actionLog,
         lastTorpedoEvent,
+        crewReady,
         error,
         setMyName,
         setMyRole,
@@ -428,6 +441,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         rearmTorps,
         setCooling,
         castVote,
+        reportReady,
       }}
     >
       {children}

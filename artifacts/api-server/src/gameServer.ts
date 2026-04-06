@@ -54,6 +54,7 @@ interface Room {
   gameState: GameState;
   phase: 'LOBBY' | 'PLAYING' | 'COMPLETE';
   gameLoop: ReturnType<typeof setInterval> | null;
+  crewReady: Set<RoleKey>; // roles that have confirmed ready for current step
 }
 
 const rooms = new Map<string, Room>();
@@ -130,14 +131,16 @@ function broadcastToRoom(room: Room, message: object) {
 }
 
 function broadcastGameState(room: Room) {
+  // Send player names/roles but NOT avatars — avatars are large base64 blobs
+  // that only need to be sent once via PLAYER_LIST, not every 500ms tick
   broadcastToRoom(room, {
     type: 'GAME_STATE',
     state: room.gameState,
     players: Array.from(room.players.values()).map((p) => ({
       name: p.name,
       role: p.role,
-      avatar: p.avatar,
     })),
+    crewReady: Array.from(room.crewReady),
   });
 }
 
@@ -260,6 +263,7 @@ function handleMessage(ws: WebSocket, message: string) {
         gameState: createInitialGameState(),
         phase: 'LOBBY',
         gameLoop: null,
+        crewReady: new Set(),
       };
       const playerId = `${Date.now()}-${Math.random()}`;
       newRoom.players.set(playerId, {
@@ -308,6 +312,7 @@ function handleMessage(ws: WebSocket, message: string) {
     case 'START_GAME': {
       if (!room || room.phase !== 'LOBBY') return;
       room.phase = 'PLAYING';
+      room.crewReady.clear();
       broadcastToRoom(room, { type: 'GAME_START' });
       broadcastGameState(room);
       startGameLoop(room);
@@ -343,6 +348,7 @@ function handleMessage(ws: WebSocket, message: string) {
       let h = Math.round(Number(msg['heading'])) % 360;
       if (h < 0) h += 360;
       room.gameState.heading = h;
+      broadcastGameState(room);
       break;
     }
 
@@ -438,6 +444,36 @@ function handleMessage(ws: WebSocket, message: string) {
     case 'SET_COOLING': {
       if (!room) return;
       room.gameState.coolingRods = Math.max(0, Math.min(100, Number(msg['level'])));
+      broadcastGameState(room);
+      break;
+    }
+
+    case 'CREW_READY': {
+      if (!room) return;
+      const playerId = socketToPlayerId.get(ws);
+      if (!playerId) return;
+      const player = room.players.get(playerId);
+      if (!player) return;
+
+      room.crewReady.add(player.role);
+      actionLog(room, `${player.name} (${player.role.toUpperCase()}) reports READY.`, 'info');
+
+      // Check if all present roles are ready
+      const presentRoles = new Set(
+        Array.from(room.players.values()).map((p) => p.role)
+      );
+      const allReady = Array.from(presentRoles).every((r) => room.crewReady.has(r));
+
+      if (allReady && presentRoles.size > 0) {
+        room.gameState.missionStep++;
+        room.crewReady.clear();
+        broadcastToRoom(room, {
+          type: 'MISSION_STEP',
+          missionStep: room.gameState.missionStep,
+        });
+        actionLog(room, `All stations ready — advancing to step ${room.gameState.missionStep + 1}.`, 'info');
+      }
+
       broadcastGameState(room);
       break;
     }
