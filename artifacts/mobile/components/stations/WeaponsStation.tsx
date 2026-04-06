@@ -4,9 +4,10 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  ScrollView,
   Platform,
 } from 'react-native';
-import { useGame, Enemy } from '@/contexts/GameContext';
+import { useGame, Enemy, TorpedoEvent } from '@/contexts/GameContext';
 import { Colors } from '@/constants/Colors';
 import { bearingLabel, rangeKm, hitProbability } from '@/utils/bearingMath';
 import { playSound } from '@/utils/sounds';
@@ -46,11 +47,12 @@ let _dragStartX = 0;
 let _dragStartBearing = 0;
 
 export function WeaponsStation() {
-  const { gameState, fireTorpedo } = useGame();
+  const { gameState, fireTorpedo, lastTorpedoEvent } = useGame();
   const [selectedTarget, setSelectedTarget] = useState<number | null>(null);
   const [firing, setFiring] = useState(false);
   const [visionMode, setVisionMode] = useState<VisionMode>('standard');
-  const [viewBearing, setViewBearing] = useState(0); // for HUD display
+  const [viewBearing, setViewBearing] = useState(0);
+  const lastEventRef = useRef<number>(0);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameRef = useRef(0);
@@ -58,6 +60,23 @@ export function WeaponsStation() {
   const isLockedRef = useRef(false);
 
   const gs = gameState;
+
+  // React to torpedo events from server (triggers explosions for ALL players)
+  useEffect(() => {
+    if (!lastTorpedoEvent || lastTorpedoEvent.timestamp === lastEventRef.current) return;
+    lastEventRef.current = lastTorpedoEvent.timestamp;
+    if (lastTorpedoEvent.targetBearing != null) {
+      const canvas = canvasRef.current;
+      const W = canvas?.width || 400;
+      const H = canvas?.height || 280;
+      const fov = 90;
+      const degPerPx = fov / W;
+      const diff = ((lastTorpedoEvent.targetBearing - _viewBearing + 540) % 360) - 180;
+      const ex = W / 2 + diff / degPerPx;
+      const ey = H * 0.48 - ((1 - (lastTorpedoEvent.targetRange || 0.5)) * 15);
+      _explosions.push({ x: ex, y: ey, frame: 0, maxFrames: lastTorpedoEvent.hit ? 60 : 25 });
+    }
+  }, [lastTorpedoEvent]);
 
   // Sync view bearing from sub heading initially
   useEffect(() => {
@@ -488,7 +507,10 @@ export function WeaponsStation() {
     playSound('torpedoFire');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
 
-    // Get canvas dimensions for torpedo anim
+    // Fire IMMEDIATELY on server — server decides hit/miss
+    fireTorpedo(selectedTarget);
+
+    // Start local torpedo animation (cosmetic only)
     const canvas = canvasRef.current;
     const W = canvas?.width || 400;
     const H = canvas?.height || 280;
@@ -498,26 +520,22 @@ export function WeaponsStation() {
     const targetX = W / 2 + bearingDiff / degPerPx;
     const targetY = H * 0.48 - (1 - target.range) * 15;
 
-    // Launch torpedo from bottom center
     _torpedo = {
       x: W / 2, y: H - 20,
       targetX, targetY,
       progress: 0,
-      hit: Math.random() < hitPct / 100,
+      hit: true, // placeholder — real result comes from server via TORPEDO_HIT/MISS
       targetId: selectedTarget,
     };
 
-    // Send fire command after torpedo arrives (~1.8s)
-    setTimeout(() => {
-      fireTorpedo(selectedTarget);
-    }, 1800);
-
+    // Re-enable firing after animation
     setTimeout(() => {
       setFiring(false);
-      const stillAlive = gs.enemies.find((e) => e.id === selectedTarget && !e.destroyed);
-      if (!stillAlive) setSelectedTarget(null);
-    }, 3500);
-  }, [canFire, selectedTarget, target, gs, fireTorpedo, hitPct]);
+      // Check if target was destroyed by server state update
+      const alive = gs.enemies.find((e) => e.id === selectedTarget && !e.destroyed);
+      if (!alive) setSelectedTarget(null);
+    }, 2500);
+  }, [canFire, selectedTarget, target, gs, fireTorpedo]);
 
   return (
     <View style={styles.root}>
@@ -591,8 +609,7 @@ export function WeaponsStation() {
       </View>
 
       {/* RIGHT: Controls */}
-      <View style={styles.controlsCol}>
-        <View style={styles.controls}>
+      <ScrollView style={styles.controlsCol} contentContainerStyle={styles.controls} showsVerticalScrollIndicator={false}>
           <MissionTaskCard />
 
           <View style={styles.card}>
@@ -653,8 +670,7 @@ export function WeaponsStation() {
               {target.identified ? target.type : 'CONTACT'} \u00B7 BRG {bearingLabel(target.bearing)} \u00B7 {hitPct}% HIT
             </Text>
           )}
-        </View>
-      </View>
+      </ScrollView>
     </View>
   );
 }

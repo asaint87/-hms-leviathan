@@ -379,10 +379,21 @@ function handleMessage(ws: WebSocket, message: string) {
         const hit = Math.random() < hitChance;
         if (hit) {
           target.destroyed = true;
-          broadcastToRoom(room, { type: 'TORPEDO_HIT', targetId: target.id });
+          broadcastToRoom(room, {
+            type: 'TORPEDO_HIT',
+            targetId: target.id,
+            targetBearing: target.bearing,
+            targetRange: target.range,
+            targetType: target.type,
+          });
           actionLog(room, `TORPEDO HIT — ${target.type} DESTROYED`, 'kill');
         } else {
-          broadcastToRoom(room, { type: 'TORPEDO_MISS' });
+          broadcastToRoom(room, {
+            type: 'TORPEDO_MISS',
+            targetId: target.id,
+            targetBearing: target.bearing,
+            targetRange: target.range,
+          });
           actionLog(room, 'TORPEDO MISS — target evaded.', 'warn');
         }
       } else {

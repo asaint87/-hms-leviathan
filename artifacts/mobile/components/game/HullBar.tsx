@@ -3,7 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { useGame } from '@/contexts/GameContext';
 import { Colors } from '@/constants/Colors';
 
-export function HullBar() {
+export function HullBar({ roomCode }: { roomCode?: string | null }) {
   const { gameState } = useGame();
 
   const hull = gameState?.hull ?? 100;
@@ -62,6 +62,15 @@ export function HullBar() {
         <Text style={[styles.val, { color: tempColor }]}>{Math.round(reactorTemp)}°</Text>
         <Text style={styles.lbl}>REACTOR</Text>
       </View>
+      {roomCode && (
+        <>
+          <View style={styles.divider} />
+          <View style={styles.stat}>
+            <Text style={[styles.val, { color: Colors.amber, fontSize: 9 }]}>{roomCode}</Text>
+            <Text style={styles.lbl}>ROOM</Text>
+          </View>
+        </>
+      )}
     </View>
   );
 }

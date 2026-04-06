@@ -85,6 +85,15 @@ export interface ActionLogEntry {
   timestamp: number;
 }
 
+export interface TorpedoEvent {
+  hit: boolean;
+  targetId?: number;
+  targetBearing?: number;
+  targetRange?: number;
+  targetType?: string;
+  timestamp: number;
+}
+
 interface GameContextValue {
   connected: boolean;
   roomCode: string | null;
@@ -97,6 +106,7 @@ interface GameContextValue {
   crisis: { crisisId: string; def: { title: string; description: string } } | null;
   voteState: VoteState | null;
   actionLog: ActionLogEntry[];
+  lastTorpedoEvent: TorpedoEvent | null;
   error: string | null;
 
   setMyName: (name: string) => void;
@@ -154,6 +164,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   } | null>(null);
   const [voteState, setVoteState] = useState<VoteState | null>(null);
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
+  const [lastTorpedoEvent, setLastTorpedoEvent] = useState<TorpedoEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -248,10 +259,29 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
           case 'TORPEDO_HIT':
             playSound('explosion');
             setTimeout(() => playSound('kill'), 800);
-            addLog('TORPEDO HIT — target destroyed!', 'kill');
+            addLog(
+              `TORPEDO HIT — ${msg['targetType'] || 'target'} DESTROYED!`,
+              'kill'
+            );
+            setLastTorpedoEvent({
+              hit: true,
+              targetId: msg['targetId'] as number | undefined,
+              targetBearing: msg['targetBearing'] as number | undefined,
+              targetRange: msg['targetRange'] as number | undefined,
+              targetType: msg['targetType'] as string | undefined,
+              timestamp: Date.now(),
+            });
             break;
           case 'TORPEDO_MISS':
+            playSound('torpedoFire');
             addLog('TORPEDO MISS — target evaded.', 'warn');
+            setLastTorpedoEvent({
+              hit: false,
+              targetId: msg['targetId'] as number | undefined,
+              targetBearing: msg['targetBearing'] as number | undefined,
+              targetRange: msg['targetRange'] as number | undefined,
+              timestamp: Date.now(),
+            });
             break;
           case 'ACTION_LOG':
             addLog(String(msg['text']), (msg['kind'] as ActionLogEntry['kind']) || 'info');
@@ -321,6 +351,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setCrisis(null);
     setVoteState(null);
     setActionLog([]);
+    setLastTorpedoEvent(null);
     playSound('alarmStop');
   }, [send]);
 
@@ -378,6 +409,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         crisis,
         voteState,
         actionLog,
+        lastTorpedoEvent,
         error,
         setMyName,
         setMyRole,

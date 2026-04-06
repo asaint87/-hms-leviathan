@@ -34,9 +34,10 @@ const STATIONS: { key: RoleKey; icon: string; label: string }[] = [
 export default function GameScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { phase, gameState, crisis, voteState, leaveGame, myRole } = useGame();
+  const { phase, gameState, crisis, voteState, leaveGame, myRole, roomCode } = useGame();
   const [activeStation, setActiveStation] = useState<RoleKey>(myRole);
   const [showEndModal, setShowEndModal] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
@@ -80,7 +81,7 @@ export default function GameScreen() {
       {crisis && <CrisisBanner crisis={crisis} />}
       {voteState && <VoteOverlay voteState={voteState} />}
 
-      <HullBar />
+      <HullBar roomCode={roomCode} />
 
       <View style={styles.stationNav}>
         <Text style={styles.shipName}>HMS LEVIATHAN</Text>
@@ -110,14 +111,44 @@ export default function GameScreen() {
             );
           })}
         </View>
-        <TouchableOpacity style={styles.leaveBtn} onPress={handleLeave}>
-          <MaterialCommunityIcons name="exit-run" size={18} color={Colors.textDim} />
+        <TouchableOpacity style={styles.leaveBtn} onPress={() => setShowLeaveConfirm(true)}>
+          <MaterialCommunityIcons name="exit-run" size={16} color={Colors.red} />
+          <Text style={styles.leaveBtnText}>LEAVE</Text>
         </TouchableOpacity>
       </View>
 
       <View style={styles.stationContent}>
         {renderStation()}
       </View>
+
+      <Modal visible={showLeaveConfirm} transparent animationType="fade" onRequestClose={() => setShowLeaveConfirm(false)}>
+        <View style={styles.endOverlay}>
+          <View style={[styles.endCard, { borderColor: Colors.red }]}>
+            <Text style={[styles.endTitle, { color: Colors.red, fontSize: 22, lineHeight: 28 }]}>
+              ABANDON{'\n'}SHIP?
+            </Text>
+            {roomCode && (
+              <Text style={styles.leaveRoomCode}>
+                Room code: {roomCode} — share this to rejoin
+              </Text>
+            )}
+            <View style={styles.leaveActions}>
+              <TouchableOpacity
+                style={[styles.endBtn, { borderColor: Colors.textDim }]}
+                onPress={() => setShowLeaveConfirm(false)}
+              >
+                <Text style={[styles.endBtnText, { color: Colors.textDim }]}>STAY</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.endBtn, { borderColor: Colors.red, backgroundColor: 'rgba(255,48,48,0.12)' }]}
+                onPress={handleLeave}
+              >
+                <Text style={[styles.endBtnText, { color: Colors.red }]}>LEAVE GAME</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={showEndModal} transparent animationType="fade">
         <View style={styles.endOverlay}>
@@ -194,7 +225,33 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   leaveBtn: {
-    padding: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,48,48,0.3)',
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,48,48,0.06)',
+  },
+  leaveBtnText: {
+    fontFamily: 'Orbitron_400Regular',
+    fontSize: 7,
+    color: Colors.red,
+    letterSpacing: 1,
+  },
+  leaveRoomCode: {
+    fontFamily: 'ShareTechMono_400Regular',
+    fontSize: 11,
+    color: Colors.amber,
+    letterSpacing: 1,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  leaveActions: {
+    flexDirection: 'row',
+    gap: 16,
   },
   stationContent: {
     flex: 1,
