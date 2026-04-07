@@ -10,10 +10,20 @@ type SoundType =
   | 'contact'
   | 'kill'
   | 'click'
-  | 'buttonPress';
+  | 'buttonPress'
+  | 'missionStart'
+  | 'abyssalPulse';
 
 let audioCtx: AudioContext | null = null;
 let alarmOscillators: OscillatorNode[] = [];
+
+/**
+ * Looped sounds — keyed by tone name. Each entry has a `stop` callback that
+ * cleans up oscillators and any scheduling intervals. Used by sounds that
+ * need to play continuously until explicitly stopped (e.g. abyssalPulse
+ * during MT0 step 8 — runs until the step ends).
+ */
+const loopedSounds: Map<string, { stop: () => void }> = new Map();
 
 function getCtx(): AudioContext | null {
   if (Platform.OS !== 'web') return null;
@@ -27,7 +37,7 @@ function getCtx(): AudioContext | null {
   return audioCtx;
 }
 
-export function playSound(type: SoundType) {
+export function playSound(type: SoundType | string, _opts?: { loop?: boolean }) {
   if (Platform.OS !== 'web') return;
   const ctx = getCtx();
   if (!ctx) return;
@@ -189,7 +199,92 @@ export function playSound(type: SoundType) {
         osc.stop(ctx.currentTime + 0.05);
         break;
       }
+
+      case 'missionStart': {
+        // Short rising heroic tone — plays when M01 begins after MT0 hands off.
+        // Two-layer: triangle base + sine harmonic for richness.
+        const now = ctx.currentTime;
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(220, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.6);
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(0.25, now + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.75);
+
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(440, now);
+        osc2.frequency.exponentialRampToValueAtTime(1760, now + 0.6);
+        gain2.gain.setValueAtTime(0, now);
+        gain2.gain.linearRampToValueAtTime(0.12, now + 0.05);
+        gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.start(now);
+        osc2.stop(now + 0.75);
+        break;
+      }
+
+      case 'abyssalPulse': {
+        // Looped low-frequency pulse — atmospheric, ominous. Fires from MT0
+        // step 8 side effect and runs until that step completes (server
+        // sends STOP_TONE which calls stopSound('abyssalPulse')).
+        // Pattern: 40hz sine, gain envelope cycles every 3 seconds:
+        //   fade in 1.0s → hold 0.5s → fade out 1.5s → silence (loop)
+        if (loopedSounds.has('abyssalPulse')) return; // already playing
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 40;
+        gain.gain.value = 0;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+
+        const schedulePulse = () => {
+          if (!ctx) return;
+          const now = ctx.currentTime;
+          gain.gain.cancelScheduledValues(now);
+          gain.gain.setValueAtTime(0, now);
+          gain.gain.linearRampToValueAtTime(0.5, now + 1.0);
+          gain.gain.setValueAtTime(0.5, now + 1.5);
+          gain.gain.linearRampToValueAtTime(0, now + 3.0);
+        };
+        schedulePulse();
+        const interval = setInterval(schedulePulse, 3000);
+
+        loopedSounds.set('abyssalPulse', {
+          stop: () => {
+            clearInterval(interval);
+            try { gain.gain.cancelScheduledValues(ctx!.currentTime); } catch {}
+            try { gain.gain.setValueAtTime(0, ctx!.currentTime); } catch {}
+            try { osc.stop(); } catch {}
+          },
+        });
+        break;
+      }
     }
   } catch (e) {
   }
+}
+
+/**
+ * Stop a looped sound by name. No-op if the sound is not currently playing.
+ * Called by GameContext when a STOP_TONE message arrives from the server.
+ */
+export function stopSound(type: SoundType | string) {
+  if (Platform.OS !== 'web') return;
+  const entry = loopedSounds.get(type);
+  if (!entry) return;
+  try { entry.stop(); } catch {}
+  loopedSounds.delete(type);
 }

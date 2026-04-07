@@ -80,6 +80,13 @@ export interface MissionStep {
   };
   /** Side effects that fire once when this step becomes active */
   sideEffects?: SideEffect[];
+  /**
+   * If true, the engine will NOT auto-advance this step even when all
+   * waitFor roles are confirmed. The captain must tap CONTINUE manually.
+   * Use for dramatic beats where the captain needs to give a verbal order
+   * before the system fires the next action (e.g. "Take the shot.").
+   */
+  requireCaptainAdvance?: boolean;
 }
 
 export interface MissionCompletionOverlay {
@@ -137,6 +144,12 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
         },
         waitFor: ['s', 'n', 'w', 'e'],
         // No autoConfirmOn — the READY tap *is* the action; CREW_READY → confirmStep handles it.
+        // missionStart tone fires here — M01 is reached only after MT0 hands off,
+        // so this plays as the training simulation glitch overlay clears and the
+        // real patrol begins. Semantic match for "missionStart".
+        sideEffects: [
+          { type: 'PLAY_TONE', tone: 'missionStart' },
+        ],
         doneText: 'All stations confirmed ready.',
       },
       {
@@ -207,10 +220,8 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
         captainHint: 'No confirmations needed. This is the mission launch moment \u2014 tap CONTINUE.',
         crewTasks: {},
         waitFor: [],
-        sideEffects: [
-          { type: 'PLAY_TONE', tone: 'missionStart' },
-        ],
         // Captain manually advances. End of mission.
+        // (missionStart tone moved to s1 — fires when M01 begins, not ends.)
         doneText: 'Mission underway.',
       },
     ],
@@ -333,6 +344,180 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
         waitFor: ['w'],
         autoConfirmOn: { role: 'w', trigger: 'FIRE_TORPEDO' },
         doneText: 'Torpedo fired on Captain\'s authorization.',
+      },
+    ],
+  },
+
+  // =========================================================================
+  // MT0 — LEVIATHAN PROTOCOL · TRAINING EXERCISE 01
+  // The training simulation that runs first when START_GAME fires.
+  // 8 steps culminating in a torpedo hit, then a glitch-overlay handoff
+  // reveals an unidentified deep signal and auto-starts M01.
+  // =========================================================================
+  MT0: {
+    key: 'MT0',
+    badge: 'MT0 \u00B7 TRAINING',
+    name: 'LEVIATHAN PROTOCOL \u2014 TRAINING EXERCISE 01',
+    brief:
+      'Crew, this is a live simulation. Treat it as real. Track, identify, ' +
+      'and neutralize a hostile submarine. You will rely on each other. ' +
+      'Simulation begins now.',
+    handoff: {
+      nextMission: 'M01',
+      delayMs: 8000,
+      completionOverlay: {
+        title: 'SIMULATION COMPLETE',
+        glitch: true,
+        body:
+          'Target neutralized. Crew performance: Operational.\n\n' +
+          'Systems review\u2026 interrupted.\n\n' +
+          'Unidentified signal detected below test depth.\n\n' +
+          'Source: Unknown\nClassification: Unresolved\n\n' +
+          'This was not part of the simulation.\n\n' +
+          'New mission parameters incoming\u2026\n\n' +
+          'MISSION 01 UNLOCKED \u2014 SEA TRIALS\n\n' +
+          'Your crew is ready. The ocean is not.',
+      },
+    },
+    steps: [
+      {
+        id: 's1',
+        captainSay: '"Sonar, find me something. We\'re blind without you."',
+        captainHint: 'Wait for Sonar to ping the water.',
+        crewTasks: {
+          s: {
+            text: 'The ocean is quiet. Ping the water \u2014 find the contact.',
+            hint: 'Say "Sonar \u2014 contact bearing [number]" to Captain.',
+          },
+        },
+        waitFor: ['s'],
+        autoConfirmOn: { role: 's', trigger: 'SONAR_PING' },
+        doneText: 'Contact acquired. Bearing confirmed.',
+      },
+      {
+        id: 's2',
+        captainSay: '"Navigator, plot intercept. Don\'t lose them."',
+        captainHint: 'Wait for Navigator to set intercept heading and speed.',
+        crewTasks: {
+          n: {
+            text: 'Target is moving. Come to bearing 034. Set speed Ahead 2/3.',
+            hint: 'Say "Navigator \u2014 on intercept course" to Captain.',
+          },
+        },
+        waitFor: ['n'],
+        autoConfirmOn: {
+          role: 'n',
+          trigger: 'SET_SPEED',
+          requireState: { speed: '2/3', heading: { near: 34, tolerance: 15 } },
+        },
+        doneText: 'Intercept course set. Closing distance.',
+      },
+      {
+        id: 's3',
+        captainSay: '"Engineer, I want speed and stealth. Make it work."',
+        captainHint: 'Wait for Engineer to balance the power load.',
+        crewTasks: {
+          e: {
+            text: 'Propulsion, sonar, and cooling are all demanding power. Balance them. Don\'t let anything overheat.',
+            hint: 'Say "Engineer \u2014 systems balanced" to Captain.',
+          },
+        },
+        waitFor: ['e'],
+        // Verbal confirmation — no autoConfirmOn. Engineer taps READY.
+        doneText: 'Power balanced. Running hot but stable.',
+      },
+      {
+        id: 's4',
+        captainSay: '"Sonar, confirm target. Navigator, hold us steady."',
+        captainHint: 'Sonar must reacquire the contact. Navigator holds position.',
+        crewTasks: {
+          s: {
+            text: 'Target is evading. Ping again \u2014 reacquire the contact.',
+            hint: 'Say "Sonar \u2014 contact reacquired" to Captain.',
+          },
+          n: {
+            text: 'Hold our position. Don\'t let us drift.',
+            hint: 'Say "Navigator \u2014 holding steady" to Captain, then tap REPORT READY.',
+          },
+        },
+        waitFor: ['s', 'n'],
+        // Sonar auto-confirms via PING. Navigator manually taps READY (verbal hold).
+        autoConfirmOn: { role: 's', trigger: 'SONAR_PING' },
+        doneText: 'Target reacquired. Holding position.',
+      },
+      {
+        id: 's5',
+        captainSay: '"Weapons, stand by. I want a clean shot."',
+        captainHint: 'Wait for Weapons to lock the target.',
+        crewTasks: {
+          w: {
+            text: 'Target is in range but moving. Lock on. Do not fire \u2014 wait for Captain.',
+            hint: 'Say "Weapons \u2014 locked on target" to Captain.',
+          },
+        },
+        waitFor: ['w'],
+        autoConfirmOn: { role: 'w', trigger: 'WEAPONS_LOCK' },
+        doneText: 'Target locked. Awaiting fire order.',
+      },
+      {
+        id: 's6',
+        captainSay: '"All stations report. We take the shot on my mark."',
+        captainHint: 'When all 4 crew are READY, tap CONTINUE to give the fire order.',
+        crewTasks: {
+          s: { text: 'Report status to Captain. Tap READY.', hint: 'Say "Sonar \u2014 ready" to Captain.' },
+          n: { text: 'Report status to Captain. Tap READY.', hint: 'Say "Navigator \u2014 ready" to Captain.' },
+          e: { text: 'Report status to Captain. Tap READY.', hint: 'Say "Engineer \u2014 ready" to Captain.' },
+          w: { text: 'All stations reporting. Stay locked. Tap READY.', hint: 'Say "Weapons \u2014 ready, target locked" to Captain.' },
+        },
+        waitFor: ['s', 'n', 'e', 'w'],
+        // Captain owns the dramatic beat. Engine waits for manual CONTINUE
+        // even after all 4 crew confirm. The captain says "Fire" out loud
+        // on the next step.
+        requireCaptainAdvance: true,
+        doneText: 'All stations ready. Fire order incoming.',
+      },
+      {
+        id: 's7',
+        captainSay: '"Fire."',
+        captainHint: 'Weapons executes. Watch for impact.',
+        crewTasks: {
+          w: {
+            text: 'Captain authorized fire. Press FIRE TORPEDO now.',
+            hint: 'Say "Torpedo away" to Captain.',
+          },
+        },
+        waitFor: ['w'],
+        autoConfirmOn: { role: 'w', trigger: 'FIRE_TORPEDO' },
+        doneText: 'Torpedo away. Tracking impact.',
+      },
+      {
+        id: 's8',
+        captainSay: '"\u2026Sonar, report."',
+        captainHint: 'Something is wrong. Wait for Sonar to lock the new signal.',
+        crewTasks: {
+          s: {
+            text: 'Something is on your screen. It wasn\'t there before. Align the frequency \u2014 lock it if you can.',
+            hint: 'Say "Captain\u2026 I\'m reading something. It\'s not debris." to Captain.',
+          },
+        },
+        waitFor: ['s'],
+        autoConfirmOn: { role: 's', trigger: 'SONAR_PING' },
+        sideEffects: [
+          {
+            type: 'SPAWN_CONTACT',
+            contact: {
+              bearing: 180,
+              range: 0.95,
+              identified: false,
+              type: 'UNKNOWN \u2014 DEEP SIGNAL',
+              col: '#00e5cc',
+              style: 'pulse-slow',
+              strength: 0.3,
+            },
+          },
+          { type: 'PLAY_TONE', tone: 'abyssalPulse', loop: true },
+        ],
+        doneText: 'Signal acquired. Source unknown.',
       },
     ],
   },

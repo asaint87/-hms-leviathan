@@ -7,7 +7,7 @@ import React, {
   useCallback,
 } from 'react';
 import { Platform } from 'react-native';
-import { playSound } from '@/utils/sounds';
+import { playSound, stopSound } from '@/utils/sounds';
 import type { MissionThread } from '@/components/game/missionThreads';
 
 export type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
@@ -124,6 +124,8 @@ interface GameContextValue {
   activeStepIdx: number;
   stepConfirmations: Record<string, RoleKey[]>;
   completionOverlay: CompletionOverlay | null;
+  /** Mission key whose brief overlay was last dismissed by the captain. */
+  briefDismissedFor: string | null;
   error: string | null;
 
   setMyName: (name: string) => void;
@@ -149,6 +151,7 @@ interface GameContextValue {
   startMission: (missionKey: string) => void;
   captainAdvanceStep: () => void;
   dismissCompletionOverlay: () => void;
+  dismissMissionBrief: () => void;
 }
 
 const GameContext = createContext<GameContextValue | null>(null);
@@ -192,6 +195,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [activeStepIdx, setActiveStepIdx] = useState(0);
   const [stepConfirmations, setStepConfirmations] = useState<Record<string, RoleKey[]>>({});
   const [completionOverlay, setCompletionOverlay] = useState<CompletionOverlay | null>(null);
+  const [briefDismissedFor, setBriefDismissedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -275,10 +279,17 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             break;
           }
           case 'MISSION_ACTIVE': {
-            setActiveMissionThread(msg['thread'] as MissionThread);
+            const newThread = msg['thread'] as MissionThread;
+            setActiveMissionThread(newThread);
             setActiveStepIdx((msg['stepIdx'] as number) ?? 0);
             setStepConfirmations({});
             setCompletionOverlay(null);
+            // Reset brief dismissal so the new mission's brief overlay shows.
+            setBriefDismissedFor(null);
+            break;
+          }
+          case 'MISSION_BRIEF_DISMISS': {
+            setBriefDismissedFor(String(msg['missionKey'] || ''));
             break;
           }
           case 'MISSION_STEP_ADVANCE': {
@@ -299,14 +310,14 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             break;
           }
           case 'PLAY_TONE': {
-            // Engine plumbing — actual oscillator implementations come later.
-            // Tones not in the playSound switch will silently no-op.
             const tone = String(msg['tone'] || '');
-            try { (playSound as any)(tone); } catch {}
+            const loop = !!msg['loop'];
+            try { playSound(tone, { loop }); } catch {}
             break;
           }
           case 'STOP_TONE': {
-            // Looped tones not yet implemented in sounds.ts — no-op for now.
+            const tone = String(msg['tone'] || '');
+            try { stopSound(tone); } catch {}
             break;
           }
           case 'MISSION_STEP': {
@@ -432,6 +443,9 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setActiveStepIdx(0);
     setStepConfirmations({});
     setCompletionOverlay(null);
+    setBriefDismissedFor(null);
+    // Stop any looped tones still playing (e.g. abyssalPulse from MT0 s8)
+    try { stopSound('abyssalPulse'); } catch {}
     playSound('alarmStop');
   }, [send]);
 
@@ -481,6 +495,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     [send]
   );
   const dismissCompletionOverlay = useCallback(() => setCompletionOverlay(null), []);
+  const dismissMissionBrief = useCallback(
+    () => send({ type: 'MISSION_BRIEF_DISMISS' }),
+    [send]
+  );
   const castVote = useCallback(
     (vote: string) => {
       send({ type: 'CAST_VOTE', vote });
@@ -509,6 +527,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         activeStepIdx,
         stepConfirmations,
         completionOverlay,
+        briefDismissedFor,
         error,
         setMyName,
         setMyRole,
@@ -532,6 +551,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         startMission,
         captainAdvanceStep,
         dismissCompletionOverlay,
+        dismissMissionBrief,
       }}
     >
       {children}

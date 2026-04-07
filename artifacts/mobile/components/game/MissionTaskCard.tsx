@@ -145,19 +145,37 @@ export function MissionTaskCard() {
       )}
 
       {/* Captain manual advance */}
-      {isCaptain && (
-        <TouchableOpacity
-          style={[styles.advanceBtn, { borderColor: Colors.amber }]}
-          onPress={handleAdvance}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.advanceBtnText}>
-            {pendingCount === 0
-              ? '\u2192 CONTINUE TO NEXT STEP'
-              : '\u23E9 ADVANCE (crew confirmed verbally)'}
-          </Text>
-        </TouchableOpacity>
-      )}
+      {isCaptain && (() => {
+        // When the step requires captain advance AND all crew are confirmed,
+        // this is a dramatic beat — emphasize the button.
+        const isDramaticBeat =
+          step.requireCaptainAdvance && pendingCount === 0 && pillRoles.length > 0;
+        const label = isDramaticBeat
+          ? '\u25CF GIVE THE ORDER'
+          : pendingCount === 0
+          ? '\u2192 CONTINUE TO NEXT STEP'
+          : '\u23E9 ADVANCE (crew confirmed verbally)';
+        return (
+          <TouchableOpacity
+            style={[
+              styles.advanceBtn,
+              { borderColor: isDramaticBeat ? Colors.red : Colors.amber },
+              isDramaticBeat && { backgroundColor: 'rgba(255,48,48,0.12)' },
+            ]}
+            onPress={handleAdvance}
+            activeOpacity={0.8}
+          >
+            <Text
+              style={[
+                styles.advanceBtnText,
+                isDramaticBeat && { color: Colors.red, fontSize: 11 },
+              ]}
+            >
+              {label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })()}
     </View>
   );
 }

@@ -67,6 +67,11 @@ export interface MissionStep {
     requireState?: RequireState;
   };
   sideEffects?: SideEffect[];
+  /**
+   * If true, the engine will NOT auto-advance this step even when all
+   * waitFor roles are confirmed. The captain must tap CONTINUE manually.
+   */
+  requireCaptainAdvance?: boolean;
 }
 
 export interface MissionCompletionOverlay {

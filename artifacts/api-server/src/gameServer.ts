@@ -454,7 +454,9 @@ function confirmStep(room: Room, role: RoleKey): boolean {
 
   broadcastGameState(room);
 
-  if (allDone) {
+  // If the step requires captain manual advance, do not auto-advance even
+  // when all crew confirmations are in. The captain owns the dramatic beat.
+  if (allDone && !step.requireCaptainAdvance) {
     setTimeout(() => advanceStep(room), 600);
     return true;
   }
@@ -583,9 +585,11 @@ function handleMessage(ws: WebSocket, message: string) {
       broadcastGameState(room);
       startGameLoop(room);
       actionLog(room, 'HMS Leviathan is underway. Battle stations.', 'info');
-      // Auto-initialize the first mission. When MT0 is added later,
-      // change this key to 'MT0' so the training simulation runs first.
-      if (MISSION_THREADS['M01']) {
+      // Auto-initialize the training simulation. MT0 hands off to M01.
+      if (MISSION_THREADS['MT0']) {
+        initMission(room, 'MT0');
+      } else if (MISSION_THREADS['M01']) {
+        // Fallback if MT0 is not in the registry for some reason
         initMission(room, 'M01');
       }
       break;
@@ -793,6 +797,21 @@ function handleMessage(ws: WebSocket, message: string) {
       if (!player || player.role !== 'c') return;
       if (!getActiveThread(room)) return;
       advanceStep(room);
+      break;
+    }
+
+    case 'MISSION_BRIEF_DISMISS': {
+      if (!room) return;
+      const playerId = socketToPlayerId.get(ws);
+      const player = playerId ? room.players.get(playerId) : undefined;
+      // Captain-only — non-captains are silently ignored
+      if (!player || player.role !== 'c') return;
+      const thread = getActiveThread(room);
+      if (!thread) return;
+      broadcastToRoom(room, {
+        type: 'MISSION_BRIEF_DISMISS',
+        missionKey: thread.key,
+      });
       break;
     }
   }
