@@ -10,6 +10,17 @@
 // here are required for typing the message payloads.
 
 export type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
+export type Speed = 'STOP' | '1/3' | '2/3' | 'FULL';
+
+/**
+ * Optional state predicate for autoConfirmOn — confirms only if the room's
+ * current game state matches when the trigger fires.
+ */
+export interface RequireState {
+  heading?: { equals?: number; near?: number; tolerance?: number };
+  depth?: { equals?: number; near?: number; tolerance?: number };
+  speed?: Speed;
+}
 
 /** A single instruction shown on a crew member's task card */
 export interface CrewTask {
@@ -50,7 +61,11 @@ export interface MissionStep {
   crewTasks: Partial<Record<RoleKey, CrewTask>>;
   waitFor: RoleKey[];
   doneText: string;
-  autoConfirmOn?: { role: RoleKey; trigger: AutoConfirmTrigger };
+  autoConfirmOn?: {
+    role: RoleKey;
+    trigger: AutoConfirmTrigger;
+    requireState?: RequireState;
+  };
   sideEffects?: SideEffect[];
 }
 

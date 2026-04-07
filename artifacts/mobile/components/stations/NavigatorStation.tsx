@@ -11,6 +11,7 @@ import { useGame, Speed } from '@/contexts/GameContext';
 import { Colors } from '@/constants/Colors';
 import { bearingLabel } from '@/utils/bearingMath';
 import * as Haptics from 'expo-haptics';
+import { MissionTaskCard } from '@/components/game/MissionTaskCard';
 
 const SPEEDS: Speed[] = ['STOP', '1/3', '2/3', 'FULL'];
 const SPEED_COLORS: Record<Speed, string> = {
@@ -159,6 +160,7 @@ export function NavigatorStation() {
       </View>
 
       <View style={styles.rightPanel}>
+        <MissionTaskCard />
         <View style={styles.card}>
           <Text style={styles.cardLabel}>DEPTH CONTROL — {gs.depth}m</Text>
           <View style={styles.depthGrid}>

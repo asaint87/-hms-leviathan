@@ -6,6 +6,7 @@ import {
   MissionStep,
   SideEffect,
   AutoConfirmTrigger,
+  RequireState,
 } from './missions/threads';
 
 type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
@@ -460,11 +461,46 @@ function confirmStep(room: Room, role: RoleKey): boolean {
   return false;
 }
 
+/**
+ * Check a requireState predicate against the current room game state.
+ * Heading checks are wraparound-aware (350° vs 5° = 15° apart).
+ * Default tolerance is 5 if unspecified for `near` predicates.
+ */
+function checkRequireState(gs: GameState, req: RequireState): boolean {
+  if (req.speed !== undefined && gs.speed !== req.speed) return false;
+
+  if (req.heading) {
+    const h = req.heading;
+    if (h.equals !== undefined && Math.round(gs.heading) !== h.equals) return false;
+    if (h.near !== undefined) {
+      const tol = h.tolerance ?? 5;
+      // Wraparound-aware angular distance
+      const diff = Math.abs(((gs.heading - h.near + 540) % 360) - 180);
+      if (diff > tol) return false;
+    }
+  }
+
+  if (req.depth) {
+    const d = req.depth;
+    if (d.equals !== undefined && gs.depth !== d.equals) return false;
+    if (d.near !== undefined) {
+      const tol = d.tolerance ?? 5;
+      if (Math.abs(gs.depth - d.near) > tol) return false;
+    }
+  }
+
+  return true;
+}
+
 /** Check the current step's autoConfirmOn hook against an incoming action trigger. */
 function tryAutoConfirm(room: Room, trigger: AutoConfirmTrigger) {
   const step = getCurrentStep(room);
   if (!step?.autoConfirmOn) return;
   if (step.autoConfirmOn.trigger !== trigger) return;
+  // If a state predicate is set, only confirm when the predicate matches.
+  if (step.autoConfirmOn.requireState) {
+    if (!checkRequireState(room.gameState, step.autoConfirmOn.requireState)) return;
+  }
   confirmStep(room, step.autoConfirmOn.role);
 }
 
@@ -547,6 +583,11 @@ function handleMessage(ws: WebSocket, message: string) {
       broadcastGameState(room);
       startGameLoop(room);
       actionLog(room, 'HMS Leviathan is underway. Battle stations.', 'info');
+      // Auto-initialize the first mission. When MT0 is added later,
+      // change this key to 'MT0' so the training simulation runs first.
+      if (MISSION_THREADS['M01']) {
+        initMission(room, 'M01');
+      }
       break;
     }
 

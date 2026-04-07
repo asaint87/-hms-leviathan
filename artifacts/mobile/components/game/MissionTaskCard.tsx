@@ -22,7 +22,6 @@ export function MissionTaskCard() {
     activeStepIdx,
     stepConfirmations,
     myRole,
-    players,
     reportReady,
     captainAdvanceStep,
   } = useGame();
@@ -47,14 +46,9 @@ export function MissionTaskCard() {
   const confirmedRoles = stepConfirmations[step.id] ?? [];
   const iAmConfirmed = confirmedRoles.includes(myRole);
 
-  // Determine which roles' pills to show — the step's waitFor list,
-  // or fallback to all present roles if waitFor is empty
-  const presentRoles = Array.from(new Set(players.map((p) => p.role as RoleKey)));
-  const pillRoles =
-    step.waitFor.length > 0
-      ? step.waitFor
-      : presentRoles;
-
+  // Pills only show for roles in waitFor. Empty waitFor = no pills
+  // (e.g. final mission step with captain-only manual advance).
+  const pillRoles = step.waitFor;
   const pendingCount = pillRoles.filter((r) => !confirmedRoles.includes(r)).length;
 
   const handleReady = () => {

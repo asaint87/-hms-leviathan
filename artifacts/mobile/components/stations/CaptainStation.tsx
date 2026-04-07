@@ -13,6 +13,7 @@ import { useGame } from '@/contexts/GameContext';
 import { Colors } from '@/constants/Colors';
 import { bearingRangeToOffset, bearingLabel, rangeKm } from '@/utils/bearingMath';
 import { ActionLog } from '@/components/game/ActionLog';
+import { MissionTaskCard } from '@/components/game/MissionTaskCard';
 
 const RING_COUNT = 4;
 
@@ -80,6 +81,7 @@ export function CaptainStation() {
       </View>
 
       <View style={styles.rightPanel}>
+        <MissionTaskCard />
         <View style={styles.actionLogCard}>
           <Text style={styles.cardLabel}>BATTLE LOG</Text>
           <ActionLog entries={actionLog} />
