@@ -307,17 +307,17 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
       {
         id: 's5',
         captainSay: '"Weapons \u2014 raise the scope. Find TYPHOON-CLASS. Lock on. Do NOT fire yet."',
-        captainHint: 'Wait for Weapons to confirm lock. Then authorize fire next.',
+        captainHint: 'Wait for Weapons lock arc to complete. Then authorize fire next.',
         crewTasks: {
           w: {
             text: 'Switch to PERISCOPE mode. Tap the red TYPHOON-CLASS contact to lock. Do NOT fire \u2014 wait for Captain.',
-            hint: 'Watch for the lock arc to complete. Say "Weapons \u2014 locked on TYPHOON-CLASS" to Captain, then tap REPORT READY.',
+            hint: 'When the lock arc completes, say "Weapons \u2014 locked on TYPHOON-CLASS" to Captain.',
           },
         },
         waitFor: ['w'],
-        // TODO: switch to autoConfirmOn { trigger: 'WEAPONS_LOCK' } once the
-        // WeaponsStation lock-on action sends a server message. For now this
-        // step relies on Weapons tapping REPORT READY after verbal confirmation.
+        // Auto-confirms when the WeaponsStation lock-on animation completes
+        // (~833ms after target tap) and the client sends LOCK_TARGET to server.
+        autoConfirmOn: { role: 'w', trigger: 'WEAPONS_LOCK' },
         doneText: 'Weapons locked on target.',
       },
       {

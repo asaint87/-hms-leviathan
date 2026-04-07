@@ -47,7 +47,7 @@ let _dragStartX = 0;
 let _dragStartBearing = 0;
 
 export function WeaponsStation() {
-  const { gameState, fireTorpedo, lastTorpedoEvent } = useGame();
+  const { gameState, fireTorpedo, lockTarget, lastTorpedoEvent } = useGame();
   const [selectedTarget, setSelectedTarget] = useState<number | null>(null);
   const [firing, setFiring] = useState(false);
   const [visionMode, setVisionMode] = useState<VisionMode>('standard');
@@ -88,9 +88,16 @@ export function WeaponsStation() {
     if (selectedTarget !== null) {
       lockProgressRef.current = 0;
       isLockedRef.current = false;
+      const targetIdAtStart = selectedTarget;
       const iv = setInterval(() => {
         lockProgressRef.current = Math.min(lockProgressRef.current + 0.04, 1);
-        if (lockProgressRef.current >= 1) { clearInterval(iv); isLockedRef.current = true; }
+        if (lockProgressRef.current >= 1) {
+          clearInterval(iv);
+          isLockedRef.current = true;
+          // Notify server that lock-on completed — fires WEAPONS_LOCK trigger
+          // for any active mission step waiting on it.
+          if (targetIdAtStart !== null) lockTarget(targetIdAtStart);
+        }
       }, 50);
       return () => clearInterval(iv);
     } else {

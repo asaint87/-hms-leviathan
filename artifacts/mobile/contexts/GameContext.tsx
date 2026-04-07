@@ -140,6 +140,7 @@ interface GameContextValue {
   setDepth: (depth: number) => void;
   setSpeed: (speed: Speed) => void;
   fireTorpedo: (targetId: number) => void;
+  lockTarget: (targetId: number) => void;
   repairHull: () => void;
   rearmTorps: () => void;
   setCooling: (level: number) => void;
@@ -457,6 +458,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     },
     [send]
   );
+  const lockTarget = useCallback(
+    (targetId: number) => send({ type: 'LOCK_TARGET', targetId }),
+    [send]
+  );
   const repairHull = useCallback(() => {
     send({ type: 'REPAIR_HULL' });
     playSound('click');
@@ -518,6 +523,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         setDepth,
         setSpeed,
         fireTorpedo,
+        lockTarget,
         repairHull,
         rearmTorps,
         setCooling,

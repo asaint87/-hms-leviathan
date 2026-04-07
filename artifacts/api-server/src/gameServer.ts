@@ -646,6 +646,17 @@ function handleMessage(ws: WebSocket, message: string) {
       break;
     }
 
+    case 'LOCK_TARGET': {
+      if (!room) return;
+      // Lock-on is currently a client-side cosmetic; the server uses this
+      // message only as a mission engine trigger. targetId is included in
+      // the message for forward compatibility (a future requireState
+      // predicate could match on locked target type or id) but is unused
+      // here. No game state mutation.
+      tryAutoConfirm(room, 'WEAPONS_LOCK');
+      break;
+    }
+
     case 'FIRE_TORPEDO': {
       if (!room) return;
       const gs = room.gameState;
