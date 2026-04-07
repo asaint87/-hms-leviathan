@@ -1,63 +1,61 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { useGame, RoleKey, ROLE_NAMES } from '@/contexts/GameContext';
 import { Colors } from '@/constants/Colors';
 import * as Haptics from 'expo-haptics';
 
-interface MissionTask {
-  label: string;
-  description: string;
-}
-
-type StepTasks = Partial<Record<RoleKey, MissionTask>>;
-
-const MISSION_STEPS: Record<string, StepTasks[]> = {
-  M01: [
-    {
-      c: { label: 'ALL HANDS REPORT', description: 'Order all stations to report ready' },
-      n: { label: 'NAVIGATION READY', description: 'Confirm helm controls are operational' },
-      s: { label: 'SONAR READY', description: 'Confirm sonar array is online' },
-      e: { label: 'ENGINEERING READY', description: 'Confirm reactor and systems nominal' },
-      w: { label: 'WEAPONS READY', description: 'Confirm torpedo tubes loaded' },
-    },
-    {
-      c: { label: 'LOCATE HOSTILES', description: 'Order Sonar to ping and detect contacts' },
-      n: { label: 'HOLD POSITION', description: 'Maintain heading and await orders' },
-      s: { label: 'ACTIVE PING', description: 'Use sonar to detect all enemy contacts' },
-      e: { label: 'SYSTEMS CHECK', description: 'Maintain reactor below 400\u00b0C' },
-      w: { label: 'STANDBY', description: 'Await sonar contacts for targeting' },
-    },
-    {
-      c: { label: 'COMMAND ATTACK', description: 'Direct crew to engage hostile targets' },
-      n: { label: 'ATTACK HEADING', description: 'Close range to targets' },
-      s: { label: 'TRACK CONTACTS', description: 'Keep sonar contact with all targets' },
-      e: { label: 'LOAD TORPEDOES', description: 'Ensure all tubes are armed' },
-      w: { label: 'ENGAGE TARGETS', description: 'Lock and fire on detected enemies' },
-    },
-  ],
-};
-
+/**
+ * Mission Task Card — engine-driven.
+ *
+ * Reads the active mission thread (sent from server via MISSION_ACTIVE)
+ * and shows:
+ *   - The captain's line for the current step (captain only)
+ *   - The crew member's task (crew only)
+ *   - Crew confirmation pills (everyone)
+ *   - REPORT READY button (crew) / ADVANCE button (captain)
+ *
+ * If there is no active mission thread, this renders nothing.
+ */
 export function MissionTaskCard() {
-  const { gameState, myRole, crewReady, reportReady, players } = useGame();
+  const {
+    activeMissionThread,
+    activeStepIdx,
+    stepConfirmations,
+    myRole,
+    players,
+    reportReady,
+    captainAdvanceStep,
+  } = useGame();
+
   const [reported, setReported] = useState(false);
 
-  if (!gameState) return null;
-
-  const steps = MISSION_STEPS[gameState.missionId];
-  if (!steps) return null;
-
-  const step = Math.min(gameState.missionStep, steps.length - 1);
-  const task = steps[step]?.[myRole];
-  if (!task) return null;
-
-  const roleColor = Colors.roles[myRole]?.primary ?? Colors.amber;
-  const iAmReady = crewReady.includes(myRole);
-  const isCaptain = myRole === 'c';
-
-  // Reset reported flag when step changes
-  React.useEffect(() => {
+  // Reset local "reported" flag when the step changes
+  useEffect(() => {
     setReported(false);
-  }, [gameState.missionStep]);
+  }, [activeStepIdx, activeMissionThread?.key]);
+
+  if (!activeMissionThread) return null;
+
+  const step = activeMissionThread.steps[activeStepIdx];
+  if (!step) return null;
+
+  const isCaptain = myRole === 'c';
+  const myTask = step.crewTasks[myRole];
+  const roleColor = Colors.roles[myRole]?.primary ?? Colors.amber;
+
+  // Confirmations for the current step
+  const confirmedRoles = stepConfirmations[step.id] ?? [];
+  const iAmConfirmed = confirmedRoles.includes(myRole);
+
+  // Determine which roles' pills to show — the step's waitFor list,
+  // or fallback to all present roles if waitFor is empty
+  const presentRoles = Array.from(new Set(players.map((p) => p.role as RoleKey)));
+  const pillRoles =
+    step.waitFor.length > 0
+      ? step.waitFor
+      : presentRoles;
+
+  const pendingCount = pillRoles.filter((r) => !confirmedRoles.includes(r)).length;
 
   const handleReady = () => {
     reportReady();
@@ -65,70 +63,106 @@ export function MissionTaskCard() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
-  // Unique roles present in the game
-  const presentRoles = Array.from(new Set(players.map((p) => p.role as RoleKey)));
+  const handleAdvance = () => {
+    captainAdvanceStep();
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  };
 
   return (
-    <View style={[styles.card, { borderColor: roleColor + '40' }]}>
+    <View style={[styles.card, { borderColor: roleColor + '50' }]}>
+      {/* Header */}
       <View style={styles.header}>
         <View style={[styles.dot, { backgroundColor: roleColor }]} />
         <Text style={styles.headerText}>
-          MISSION STEP {step + 1} — OBJECTIVE
+          {activeMissionThread.badge} \u00B7 STEP {activeStepIdx + 1} OF {activeMissionThread.steps.length}
         </Text>
       </View>
-      <Text style={[styles.label, { color: roleColor }]}>{task.label}</Text>
-      <Text style={styles.description}>{task.description}</Text>
 
-      {/* Crew readiness pills — visible to everyone */}
-      <View style={styles.readinessRow}>
-        {presentRoles.map((role) => {
-          const ready = crewReady.includes(role);
-          const rc = Colors.roles[role]?.primary ?? '#555';
-          return (
-            <View
-              key={role}
-              style={[
-                styles.readinessPill,
-                { borderColor: ready ? rc : 'rgba(255,255,255,0.1)' },
-                ready && { backgroundColor: rc + '20' },
-              ]}
-            >
+      {/* Captain dialogue (visible to all, but emphasized for captain) */}
+      {step.captainSay && (
+        <View style={styles.captainSayBox}>
+          <Text style={styles.captainSayText}>{step.captainSay}</Text>
+          {isCaptain && step.captainHint && (
+            <Text style={styles.captainHint}>{step.captainHint}</Text>
+          )}
+        </View>
+      )}
+
+      {/* My task (crew only) */}
+      {!isCaptain && myTask && (
+        <View style={[styles.taskBox, { borderLeftColor: roleColor }]}>
+          <Text style={[styles.taskText, { color: roleColor }]}>{myTask.text}</Text>
+          {myTask.hint && (
+            <Text style={styles.taskHint}>{myTask.hint}</Text>
+          )}
+        </View>
+      )}
+
+      {/* Crew confirmation pills */}
+      {pillRoles.length > 0 && (
+        <View style={styles.pillsRow}>
+          {pillRoles.map((role) => {
+            const ready = confirmedRoles.includes(role);
+            const rc = Colors.roles[role]?.primary ?? '#555';
+            return (
               <View
+                key={role}
                 style={[
-                  styles.readinessDot,
-                  { backgroundColor: ready ? rc : '#333' },
-                ]}
-              />
-              <Text
-                style={[
-                  styles.readinessLabel,
-                  { color: ready ? rc : '#444' },
+                  styles.pill,
+                  { borderColor: ready ? rc : 'rgba(255,255,255,0.1)' },
+                  ready && { backgroundColor: rc + '20' },
                 ]}
               >
-                {ROLE_NAMES[role]?.toUpperCase().slice(0, 3) ?? role.toUpperCase()}
-              </Text>
-            </View>
-          );
-        })}
-      </View>
+                <View style={[styles.pillDot, { backgroundColor: ready ? rc : '#333' }]} />
+                <Text style={[styles.pillLabel, { color: ready ? rc : '#444' }]}>
+                  {(ROLE_NAMES[role] ?? role).toUpperCase().slice(0, 3)}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
-      {/* READY button */}
-      {!iAmReady && !reported ? (
+      {/* Pending count */}
+      {pendingCount > 0 && (
+        <Text style={styles.waitingText}>
+          Waiting for {pendingCount} station{pendingCount !== 1 ? 's' : ''}
+        </Text>
+      )}
+
+      {/* Crew READY button */}
+      {!isCaptain && !iAmConfirmed && !reported && myTask && (
         <TouchableOpacity
           style={[styles.readyBtn, { borderColor: roleColor, backgroundColor: roleColor + '10' }]}
           onPress={handleReady}
           activeOpacity={0.8}
         >
           <Text style={[styles.readyBtnText, { color: roleColor }]}>
-            {isCaptain ? '\u2713 ALL HANDS CONFIRMED' : '\u2713 REPORT READY'}
+            \u2713 REPORT READY
           </Text>
         </TouchableOpacity>
-      ) : (
+      )}
+
+      {/* Crew confirmed badge */}
+      {!isCaptain && (iAmConfirmed || reported) && (
         <View style={[styles.readyBadge, { borderColor: roleColor + '40' }]}>
-          <Text style={[styles.readyBadgeText, { color: roleColor }]}>
-            \u2713 {isCaptain ? 'CONFIRMED' : 'READY'}
-          </Text>
+          <Text style={[styles.readyBadgeText, { color: roleColor }]}>\u2713 READY</Text>
         </View>
+      )}
+
+      {/* Captain manual advance */}
+      {isCaptain && (
+        <TouchableOpacity
+          style={[styles.advanceBtn, { borderColor: Colors.amber }]}
+          onPress={handleAdvance}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.advanceBtnText}>
+            {pendingCount === 0
+              ? '\u2192 CONTINUE TO NEXT STEP'
+              : '\u23E9 ADVANCE (crew confirmed verbally)'}
+          </Text>
+        </TouchableOpacity>
       )}
     </View>
   );
@@ -146,39 +180,62 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginBottom: 6,
+    marginBottom: 8,
   },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
+  dot: { width: 6, height: 6, borderRadius: 3 },
   headerText: {
     fontFamily: 'Orbitron_400Regular',
     fontSize: 7,
     color: Colors.textDim,
     letterSpacing: 2,
   },
-  label: {
+  captainSayBox: {
+    backgroundColor: 'rgba(255,179,0,0.06)',
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.amber,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 8,
+    borderRadius: 4,
+  },
+  captainSayText: {
+    fontFamily: 'Orbitron_400Regular',
+    fontSize: 11,
+    color: Colors.text,
+    lineHeight: 16,
+  },
+  captainHint: {
+    fontFamily: 'ShareTechMono_400Regular',
+    fontSize: 8,
+    color: 'rgba(255,179,0,0.5)',
+    marginTop: 4,
+  },
+  taskBox: {
+    borderLeftWidth: 3,
+    paddingLeft: 8,
+    paddingVertical: 4,
+    marginBottom: 8,
+  },
+  taskText: {
     fontFamily: 'Orbitron_700Bold',
     fontSize: 11,
     letterSpacing: 1,
-    marginBottom: 4,
+    marginBottom: 3,
   },
-  description: {
+  taskHint: {
     fontFamily: 'ShareTechMono_400Regular',
     fontSize: 9,
     color: Colors.textDim,
     letterSpacing: 0.5,
-    marginBottom: 10,
   },
-  readinessRow: {
+  pillsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
-    marginBottom: 10,
+    marginTop: 4,
+    marginBottom: 6,
   },
-  readinessPill: {
+  pill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -187,14 +244,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
-  readinessDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  readinessLabel: {
+  pillDot: { width: 6, height: 6, borderRadius: 3 },
+  pillLabel: {
     fontFamily: 'Orbitron_400Regular',
     fontSize: 7,
+    letterSpacing: 1,
+  },
+  waitingText: {
+    fontFamily: 'ShareTechMono_400Regular',
+    fontSize: 8,
+    color: Colors.textDim,
+    marginBottom: 8,
     letterSpacing: 1,
   },
   readyBtn: {
@@ -202,6 +262,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderWidth: 2,
     borderRadius: 8,
+    marginTop: 4,
   },
   readyBtnText: {
     fontFamily: 'Orbitron_700Bold',
@@ -214,10 +275,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 8,
     backgroundColor: 'rgba(0,255,136,0.04)',
+    marginTop: 4,
   },
   readyBadgeText: {
     fontFamily: 'Orbitron_400Regular',
     fontSize: 9,
     letterSpacing: 2,
+  },
+  advanceBtn: {
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,179,0,0.06)',
+    marginTop: 4,
+  },
+  advanceBtnText: {
+    fontFamily: 'Orbitron_700Bold',
+    fontSize: 9,
+    color: Colors.amber,
+    letterSpacing: 1,
   },
 });

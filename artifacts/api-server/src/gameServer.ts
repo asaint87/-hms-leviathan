@@ -1,5 +1,12 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage, Server } from 'http';
+import {
+  MISSION_THREADS,
+  MissionThread,
+  MissionStep,
+  SideEffect,
+  AutoConfirmTrigger,
+} from './missions/threads';
 
 type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
 type Speed = 'STOP' | '1/3' | '2/3' | 'FULL';
@@ -20,6 +27,8 @@ interface Enemy {
   destroyed: boolean;
   col: string;
   strength: number;
+  /** Optional visual variant — e.g. 'pulse-slow' for deep mysterious contacts */
+  style?: 'normal' | 'pulse-slow';
 }
 
 interface GameState {
@@ -54,7 +63,16 @@ interface Room {
   gameState: GameState;
   phase: 'LOBBY' | 'PLAYING' | 'COMPLETE';
   gameLoop: ReturnType<typeof setInterval> | null;
-  crewReady: Set<RoleKey>; // roles that have confirmed ready for current step
+  crewReady: Set<RoleKey>; // legacy fallback — confirmations for the current step
+  // Mission Thread Engine state:
+  activeMissionKey: string | null;
+  activeStepIdx: number;
+  /** stepId -> set of roles that have confirmed that step */
+  stepConfirmations: Map<string, Set<RoleKey>>;
+  /** Pending mission handoff timer (auto-start next mission after delay) */
+  handoffTimer: ReturnType<typeof setTimeout> | null;
+  /** Tones currently playing on a loop, started by side effects */
+  activeLoopedTones: Set<string>;
 }
 
 const rooms = new Map<string, Room>();
@@ -133,6 +151,11 @@ function broadcastToRoom(room: Room, message: object) {
 function broadcastGameState(room: Room) {
   // Send player names/roles but NOT avatars — avatars are large base64 blobs
   // that only need to be sent once via PLAYER_LIST, not every 500ms tick
+  // Mission engine state is included so reconnecting clients can recover.
+  const stepConfirmations: Record<string, RoleKey[]> = {};
+  for (const [stepId, roles] of room.stepConfirmations) {
+    stepConfirmations[stepId] = Array.from(roles);
+  }
   broadcastToRoom(room, {
     type: 'GAME_STATE',
     state: room.gameState,
@@ -141,6 +164,9 @@ function broadcastGameState(room: Room) {
       role: p.role,
     })),
     crewReady: Array.from(room.crewReady),
+    activeMissionKey: room.activeMissionKey,
+    activeStepIdx: room.activeStepIdx,
+    stepConfirmations,
   });
 }
 
@@ -243,6 +269,205 @@ function stopGameLoop(room: Room) {
   }
 }
 
+// =========================================================
+// MISSION THREAD ENGINE
+// =========================================================
+
+function getActiveThread(room: Room): MissionThread | null {
+  if (!room.activeMissionKey) return null;
+  return MISSION_THREADS[room.activeMissionKey] ?? null;
+}
+
+function getCurrentStep(room: Room): MissionStep | null {
+  const thread = getActiveThread(room);
+  if (!thread) return null;
+  return thread.steps[room.activeStepIdx] ?? null;
+}
+
+/** Stop all looped tones started by previous steps */
+function clearLoopedTones(room: Room) {
+  for (const tone of room.activeLoopedTones) {
+    broadcastToRoom(room, { type: 'STOP_TONE', tone });
+  }
+  room.activeLoopedTones.clear();
+}
+
+/** Apply a step's side effects: spawn contacts, start tones, etc. */
+function applyStepSideEffects(room: Room, step: MissionStep) {
+  if (!step.sideEffects) return;
+  for (const effect of step.sideEffects) {
+    switch (effect.type) {
+      case 'SPAWN_CONTACT': {
+        const c = effect.contact;
+        const nextId =
+          room.gameState.enemies.reduce((max, e) => Math.max(max, e.id), 0) + 1;
+        room.gameState.enemies.push({
+          id: nextId,
+          bearing: c.bearing,
+          range: c.range,
+          type: c.type,
+          identified: c.identified ?? false,
+          detected: c.detected ?? false,
+          destroyed: false,
+          col: c.col ?? '#ff3030',
+          strength: c.strength ?? 0.5,
+          style: c.style ?? 'normal',
+        });
+        actionLog(room, `New contact detected: ${c.type}`, 'warn');
+        break;
+      }
+      case 'PLAY_TONE': {
+        if (effect.loop) room.activeLoopedTones.add(effect.tone);
+        broadcastToRoom(room, {
+          type: 'PLAY_TONE',
+          tone: effect.tone,
+          loop: !!effect.loop,
+        });
+        break;
+      }
+      case 'SET_DEPTH_ZONE': {
+        // Reserved for future depth zone mechanics
+        break;
+      }
+    }
+  }
+}
+
+/** Initialize a mission thread on a room. Resets step state and broadcasts. */
+function initMission(room: Room, missionKey: string) {
+  const thread = MISSION_THREADS[missionKey];
+  if (!thread) {
+    actionLog(room, `[engine] Unknown mission key: ${missionKey}`, 'crit');
+    return;
+  }
+
+  // Cancel any pending handoff and stop looped tones from previous mission
+  if (room.handoffTimer) {
+    clearTimeout(room.handoffTimer);
+    room.handoffTimer = null;
+  }
+  clearLoopedTones(room);
+
+  room.activeMissionKey = missionKey;
+  room.activeStepIdx = 0;
+  room.stepConfirmations.clear();
+  room.crewReady.clear();
+  room.gameState.missionId = missionKey;
+  room.gameState.missionStep = 0;
+
+  broadcastToRoom(room, { type: 'MISSION_ACTIVE', thread, stepIdx: 0 });
+  actionLog(room, `MISSION THREAD: ${thread.name} — Step 1 active`, 'info');
+
+  // Apply side effects of the first step
+  const firstStep = thread.steps[0];
+  if (firstStep) applyStepSideEffects(room, firstStep);
+
+  broadcastGameState(room);
+}
+
+/** Advance to the next step or complete the mission. */
+function advanceStep(room: Room) {
+  const thread = getActiveThread(room);
+  if (!thread) return;
+
+  // Stop any looped tones from the step we're leaving
+  clearLoopedTones(room);
+
+  const nextIdx = room.activeStepIdx + 1;
+  if (nextIdx >= thread.steps.length) {
+    completeMission(room);
+    return;
+  }
+
+  room.activeStepIdx = nextIdx;
+  room.gameState.missionStep = nextIdx;
+  room.crewReady.clear();
+
+  broadcastToRoom(room, {
+    type: 'MISSION_STEP_ADVANCE',
+    stepIdx: nextIdx,
+    stepId: thread.steps[nextIdx].id,
+  });
+  // Backwards-compat broadcast for clients still listening to MISSION_STEP
+  broadcastToRoom(room, { type: 'MISSION_STEP', missionStep: nextIdx });
+  actionLog(
+    room,
+    `Thread step ${nextIdx + 1}: ${thread.steps[nextIdx].doneText || ''}`,
+    'info'
+  );
+
+  applyStepSideEffects(room, thread.steps[nextIdx]);
+  broadcastGameState(room);
+}
+
+/** Complete the active mission. Triggers handoff if defined. */
+function completeMission(room: Room) {
+  const thread = getActiveThread(room);
+  if (!thread) return;
+
+  clearLoopedTones(room);
+  actionLog(room, `MISSION ${thread.name} — ALL STEPS COMPLETE`, 'kill');
+
+  if (thread.handoff) {
+    const { nextMission, delayMs, completionOverlay } = thread.handoff;
+    broadcastToRoom(room, {
+      type: 'MISSION_COMPLETE_OVERLAY',
+      title: completionOverlay?.title ?? 'MISSION COMPLETE',
+      glitch: completionOverlay?.glitch ?? false,
+      body: completionOverlay?.body ?? '',
+      nextMissionKey: nextMission,
+      delayMs,
+    });
+    if (room.handoffTimer) clearTimeout(room.handoffTimer);
+    room.handoffTimer = setTimeout(() => {
+      room.handoffTimer = null;
+      initMission(room, nextMission);
+    }, delayMs);
+  } else {
+    // No handoff — fall through to existing MISSION_COMPLETE end-game flow
+    broadcastToRoom(room, {
+      type: 'MISSION_COMPLETE',
+      missionId: thread.key,
+    });
+  }
+}
+
+/** Mark a role as having confirmed the current step. Returns true if step advanced. */
+function confirmStep(room: Room, role: RoleKey): boolean {
+  const thread = getActiveThread(room);
+  const step = getCurrentStep(room);
+  if (!thread || !step) return false;
+
+  let confirmed = room.stepConfirmations.get(step.id);
+  if (!confirmed) {
+    confirmed = new Set();
+    room.stepConfirmations.set(step.id, confirmed);
+  }
+  confirmed.add(role);
+  // Mirror to legacy crewReady so older clients still see pills update
+  room.crewReady.add(role);
+
+  // Check if all required roles are confirmed
+  const allDone =
+    step.waitFor.length > 0 && step.waitFor.every((r) => confirmed!.has(r));
+
+  broadcastGameState(room);
+
+  if (allDone) {
+    setTimeout(() => advanceStep(room), 600);
+    return true;
+  }
+  return false;
+}
+
+/** Check the current step's autoConfirmOn hook against an incoming action trigger. */
+function tryAutoConfirm(room: Room, trigger: AutoConfirmTrigger) {
+  const step = getCurrentStep(room);
+  if (!step?.autoConfirmOn) return;
+  if (step.autoConfirmOn.trigger !== trigger) return;
+  confirmStep(room, step.autoConfirmOn.role);
+}
+
 function handleMessage(ws: WebSocket, message: string) {
   let msg: Record<string, unknown>;
   try {
@@ -264,6 +489,11 @@ function handleMessage(ws: WebSocket, message: string) {
         phase: 'LOBBY',
         gameLoop: null,
         crewReady: new Set(),
+        activeMissionKey: null,
+        activeStepIdx: 0,
+        stepConfirmations: new Map(),
+        handoffTimer: null,
+        activeLoopedTones: new Set(),
       };
       const playerId = `${Date.now()}-${Math.random()}`;
       newRoom.players.set(playerId, {
@@ -340,6 +570,7 @@ function handleMessage(ws: WebSocket, message: string) {
       const detected = gs.enemies.filter((e) => e.detected && !e.destroyed).length;
       broadcastGameState(room);
       actionLog(room, `Sonar PING — ${detected} contact${detected !== 1 ? 's' : ''} detected.`, 'info');
+      tryAutoConfirm(room, 'SONAR_PING');
       break;
     }
 
@@ -349,6 +580,7 @@ function handleMessage(ws: WebSocket, message: string) {
       if (h < 0) h += 360;
       room.gameState.heading = h;
       broadcastGameState(room);
+      tryAutoConfirm(room, 'SET_HEADING');
       break;
     }
 
@@ -356,6 +588,7 @@ function handleMessage(ws: WebSocket, message: string) {
       if (!room) return;
       room.gameState.depth = Math.max(18, Math.min(300, Number(msg['depth'])));
       broadcastGameState(room);
+      tryAutoConfirm(room, 'SET_DEPTH');
       break;
     }
 
@@ -367,6 +600,7 @@ function handleMessage(ws: WebSocket, message: string) {
         room.gameState.speed = spd;
         broadcastGameState(room);
         actionLog(room, `Navigator — Speed set to ${spd}.`, 'info');
+        tryAutoConfirm(room, 'SET_SPEED');
       }
       break;
     }
@@ -407,6 +641,7 @@ function handleMessage(ws: WebSocket, message: string) {
         actionLog(room, 'TORPEDO MISS — no valid target.', 'warn');
       }
       broadcastGameState(room);
+      tryAutoConfirm(room, 'FIRE_TORPEDO');
       break;
     }
 
@@ -455,15 +690,26 @@ function handleMessage(ws: WebSocket, message: string) {
       const player = room.players.get(playerId);
       if (!player) return;
 
-      room.crewReady.add(player.role);
-      actionLog(room, `${player.name} (${player.role.toUpperCase()}) reports READY.`, 'info');
+      actionLog(
+        room,
+        `${player.name} (${player.role.toUpperCase()}) reports READY.`,
+        'info'
+      );
 
-      // Check if all present roles are ready
+      // If a mission thread is active, use the engine.
+      if (getActiveThread(room)) {
+        confirmStep(room, player.role);
+        break;
+      }
+
+      // Legacy fallback: no active thread — use old "all roles ready" behavior
+      room.crewReady.add(player.role);
       const presentRoles = new Set(
         Array.from(room.players.values()).map((p) => p.role)
       );
-      const allReady = Array.from(presentRoles).every((r) => room.crewReady.has(r));
-
+      const allReady = Array.from(presentRoles).every((r) =>
+        room.crewReady.has(r)
+      );
       if (allReady && presentRoles.size > 0) {
         room.gameState.missionStep++;
         room.crewReady.clear();
@@ -471,10 +717,30 @@ function handleMessage(ws: WebSocket, message: string) {
           type: 'MISSION_STEP',
           missionStep: room.gameState.missionStep,
         });
-        actionLog(room, `All stations ready — advancing to step ${room.gameState.missionStep + 1}.`, 'info');
       }
-
       broadcastGameState(room);
+      break;
+    }
+
+    case 'START_MISSION': {
+      if (!room) return;
+      const playerId = socketToPlayerId.get(ws);
+      const player = playerId ? room.players.get(playerId) : undefined;
+      // Captain-only — non-captains are silently ignored
+      if (!player || player.role !== 'c') return;
+      const key = String(msg['missionKey'] || '');
+      if (!key) return;
+      initMission(room, key);
+      break;
+    }
+
+    case 'CAPTAIN_ADVANCE_STEP': {
+      if (!room) return;
+      const playerId = socketToPlayerId.get(ws);
+      const player = playerId ? room.players.get(playerId) : undefined;
+      if (!player || player.role !== 'c') return;
+      if (!getActiveThread(room)) return;
+      advanceStep(room);
       break;
     }
   }
@@ -494,6 +760,11 @@ function handleDisconnect(ws: WebSocket) {
 
   if (room.players.size === 0) {
     stopGameLoop(room);
+    if (room.handoffTimer) {
+      clearTimeout(room.handoffTimer);
+      room.handoffTimer = null;
+    }
+    room.activeLoopedTones.clear();
     rooms.delete(roomCode);
   } else {
     broadcastPlayerList(room);

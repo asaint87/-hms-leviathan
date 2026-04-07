@@ -17,6 +17,7 @@ import { Colors } from '@/constants/Colors';
 import { HullBar } from '@/components/game/HullBar';
 import { CrisisBanner } from '@/components/game/CrisisBanner';
 import { VoteOverlay } from '@/components/game/VoteOverlay';
+import { MissionCompleteOverlay } from '@/components/game/MissionCompleteOverlay';
 import { CaptainStation } from '@/components/stations/CaptainStation';
 import { NavigatorStation } from '@/components/stations/NavigatorStation';
 import { SonarStation } from '@/components/stations/SonarStation';
@@ -80,6 +81,7 @@ export default function GameScreen() {
     <View style={[styles.root, { paddingTop: insets.top }]}>
       {crisis && <CrisisBanner crisis={crisis} />}
       {voteState && <VoteOverlay voteState={voteState} />}
+      <MissionCompleteOverlay />
 
       <HullBar roomCode={roomCode} />
 

@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import { Platform } from 'react-native';
 import { playSound } from '@/utils/sounds';
+import type { MissionThread } from '@/components/game/missionThreads';
 
 export type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
 export type Speed = 'STOP' | '1/3' | '2/3' | 'FULL';
@@ -44,6 +45,16 @@ export interface Enemy {
   destroyed: boolean;
   col: string;
   strength: number;
+  /** Optional visual variant — e.g. 'pulse-slow' for deep mysterious contacts */
+  style?: 'normal' | 'pulse-slow';
+}
+
+export interface CompletionOverlay {
+  title: string;
+  glitch: boolean;
+  body: string;
+  nextMissionKey?: string;
+  delayMs?: number;
 }
 
 export interface GameState {
@@ -108,6 +119,11 @@ interface GameContextValue {
   actionLog: ActionLogEntry[];
   lastTorpedoEvent: TorpedoEvent | null;
   crewReady: RoleKey[];
+  // Mission Thread Engine state:
+  activeMissionThread: MissionThread | null;
+  activeStepIdx: number;
+  stepConfirmations: Record<string, RoleKey[]>;
+  completionOverlay: CompletionOverlay | null;
   error: string | null;
 
   setMyName: (name: string) => void;
@@ -129,6 +145,9 @@ interface GameContextValue {
   setCooling: (level: number) => void;
   castVote: (vote: string) => void;
   reportReady: () => void;
+  startMission: (missionKey: string) => void;
+  captainAdvanceStep: () => void;
+  dismissCompletionOverlay: () => void;
 }
 
 const GameContext = createContext<GameContextValue | null>(null);
@@ -168,6 +187,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [lastTorpedoEvent, setLastTorpedoEvent] = useState<TorpedoEvent | null>(null);
   const [crewReady, setCrewReady] = useState<RoleKey[]>([]);
+  const [activeMissionThread, setActiveMissionThread] = useState<MissionThread | null>(null);
+  const [activeStepIdx, setActiveStepIdx] = useState(0);
+  const [stepConfirmations, setStepConfirmations] = useState<Record<string, RoleKey[]>>({});
+  const [completionOverlay, setCompletionOverlay] = useState<CompletionOverlay | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -238,14 +261,55 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             setGameState(newState);
             if (msg['players']) setPlayers(msg['players'] as PlayerInfo[]);
             if (msg['crewReady']) setCrewReady(msg['crewReady'] as RoleKey[]);
+            if (typeof msg['activeStepIdx'] === 'number') {
+              setActiveStepIdx(msg['activeStepIdx'] as number);
+            }
+            if (msg['stepConfirmations']) {
+              setStepConfirmations(msg['stepConfirmations'] as Record<string, RoleKey[]>);
+            }
             if (prevHullRef.current > 0 && newState.hull < prevHullRef.current - 5) {
               playSound('hullDamage');
             }
             prevHullRef.current = newState.hull;
             break;
           }
+          case 'MISSION_ACTIVE': {
+            setActiveMissionThread(msg['thread'] as MissionThread);
+            setActiveStepIdx((msg['stepIdx'] as number) ?? 0);
+            setStepConfirmations({});
+            setCompletionOverlay(null);
+            break;
+          }
+          case 'MISSION_STEP_ADVANCE': {
+            const idx = msg['stepIdx'] as number;
+            setActiveStepIdx(idx);
+            setStepConfirmations({});
+            setCrewReady([]);
+            break;
+          }
+          case 'MISSION_COMPLETE_OVERLAY': {
+            setCompletionOverlay({
+              title: String(msg['title'] || 'MISSION COMPLETE'),
+              glitch: !!msg['glitch'],
+              body: String(msg['body'] || ''),
+              nextMissionKey: msg['nextMissionKey'] as string | undefined,
+              delayMs: msg['delayMs'] as number | undefined,
+            });
+            break;
+          }
+          case 'PLAY_TONE': {
+            // Engine plumbing — actual oscillator implementations come later.
+            // Tones not in the playSound switch will silently no-op.
+            const tone = String(msg['tone'] || '');
+            try { (playSound as any)(tone); } catch {}
+            break;
+          }
+          case 'STOP_TONE': {
+            // Looped tones not yet implemented in sounds.ts — no-op for now.
+            break;
+          }
           case 'MISSION_STEP': {
-            // Step advanced — crewReady was cleared on server
+            // Legacy fallback (no active thread on the server).
             setCrewReady([]);
             addLog(`Mission advancing to step ${(msg['missionStep'] as number) + 1}.`, 'info');
             break;
@@ -363,6 +427,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setActionLog([]);
     setLastTorpedoEvent(null);
     setCrewReady([]);
+    setActiveMissionThread(null);
+    setActiveStepIdx(0);
+    setStepConfirmations({});
+    setCompletionOverlay(null);
     playSound('alarmStop');
   }, [send]);
 
@@ -399,6 +467,15 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   }, [send]);
   const setCooling = useCallback((level: number) => send({ type: 'SET_COOLING', level }), [send]);
   const reportReady = useCallback(() => send({ type: 'CREW_READY' }), [send]);
+  const startMission = useCallback(
+    (missionKey: string) => send({ type: 'START_MISSION', missionKey }),
+    [send]
+  );
+  const captainAdvanceStep = useCallback(
+    () => send({ type: 'CAPTAIN_ADVANCE_STEP' }),
+    [send]
+  );
+  const dismissCompletionOverlay = useCallback(() => setCompletionOverlay(null), []);
   const castVote = useCallback(
     (vote: string) => {
       send({ type: 'CAST_VOTE', vote });
@@ -423,6 +500,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         actionLog,
         lastTorpedoEvent,
         crewReady,
+        activeMissionThread,
+        activeStepIdx,
+        stepConfirmations,
+        completionOverlay,
         error,
         setMyName,
         setMyRole,
@@ -442,6 +523,9 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         setCooling,
         castVote,
         reportReady,
+        startMission,
+        captainAdvanceStep,
+        dismissCompletionOverlay,
       }}
     >
       {children}
