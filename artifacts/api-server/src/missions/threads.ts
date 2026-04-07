@@ -123,41 +123,44 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
     key: 'M01',
     badge: 'M01 \u00B7 ALL HANDS',
     name: 'ALL HANDS ON DECK',
-    brief: 'First patrol \u2014 orient the crew to their stations.',
+    brief: 'First patrol. Get every station online and confirmed.',
     steps: [
       {
         id: 's1',
         captainSay: '"All hands \u2014 report to stations. This is our first patrol."',
-        captainHint: 'Wait for each crew member to tap REPORT READY.',
+        captainHint: 'Wait for all four stations to confirm ready.',
         crewTasks: {
-          s: { text: 'Report to your station.', hint: 'Tap REPORT READY to signal Captain you are ready.' },
-          n: { text: 'Report to your station.', hint: 'Tap REPORT READY to signal Captain you are ready.' },
-          w: { text: 'Report to your station.', hint: 'Tap REPORT READY to signal Captain you are ready.' },
-          e: { text: 'Report to your station.', hint: 'Tap REPORT READY to signal Captain you are ready.' },
+          s: { text: 'Report to Sonar station. Press READY.', hint: 'Say "Sonar \u2014 ready" to Captain.' },
+          n: { text: 'Report to Navigator station. Press READY.', hint: 'Say "Navigator \u2014 ready" to Captain.' },
+          w: { text: 'Report to Weapons station. Press READY.', hint: 'Say "Weapons \u2014 ready" to Captain.' },
+          e: { text: 'Report to Engineer station. Press READY.', hint: 'Say "Engineer \u2014 ready" to Captain.' },
         },
         waitFor: ['s', 'n', 'w', 'e'],
         // No autoConfirmOn — the READY tap *is* the action; CREW_READY → confirmStep handles it.
-        doneText: 'All stations reporting in.',
+        doneText: 'All stations confirmed ready.',
       },
       {
         id: 's2',
-        captainSay: '"Sonar \u2014 ping the water. Let\'s find out what\'s out there."',
-        captainHint: 'Wait for Sonar to press the PING button.',
+        captainSay: '"Sonar \u2014 ping the water. Tell me what\'s out there."',
+        captainHint: 'Wait for Sonar to press PING.',
         crewTasks: {
-          s: { text: 'Press the PING button now.', hint: 'Tell the Captain how many contacts you see.' },
+          s: {
+            text: 'Ping the water. Press PING on your sonar screen.',
+            hint: 'Say "Sonar \u2014 contact bearing [what you see]" to Captain.',
+          },
         },
         waitFor: ['s'],
         autoConfirmOn: { role: 's', trigger: 'SONAR_PING' },
-        doneText: 'Sonar completed first ping.',
+        doneText: 'Sonar ping complete. Contacts updated.',
       },
       {
         id: 's3',
-        captainSay: '"Navigator \u2014 come to heading North. Set speed Ahead 1/3."',
-        captainHint: 'Watch the heading display and speed buttons on Navigator.',
+        captainSay: '"Navigator \u2014 come to heading North. Set speed Ahead One Third."',
+        captainHint: 'Wait for Navigator to set heading and speed.',
         crewTasks: {
           n: {
-            text: 'Set heading to NORTH (000\u00B0). Set throttle to AHEAD 1/3.',
-            hint: 'Use the compass dial to find North, then tap 1/3 on the speed control.',
+            text: 'Set heading to 000\u00B0 North. Set throttle to AHEAD 1/3.',
+            hint: 'Say "Navigator \u2014 heading North, speed Ahead One Third" to Captain.',
           },
         },
         waitFor: ['n'],
@@ -168,44 +171,168 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
           trigger: 'SET_SPEED',
           requireState: { speed: '1/3', heading: { near: 0, tolerance: 15 } },
         },
-        doneText: 'Navigator set heading and speed.',
+        doneText: 'Navigator on course. Speed set.',
       },
       {
         id: 's4',
         captainSay: '"Weapons \u2014 raise the periscope. Report what you see on the horizon."',
-        captainHint: 'Switch to Weapons tab to see their scope if needed.',
+        captainHint: 'Wait for Weapons to open the periscope and report.',
         crewTasks: {
           w: {
-            text: 'Switch to PERISCOPE view. Describe what you see. Report to Captain.',
-            hint: 'Say "All clear" or describe any ships you see, then tap REPORT READY.',
+            text: 'Open the periscope. Switch to STANDARD view. Scan the horizon.',
+            hint: 'Say "Weapons \u2014 horizon clear" or report any contacts to Captain, then tap REPORT READY.',
           },
         },
         waitFor: ['w'],
         // Verbal confirmation — no autoConfirmOn. Weapons taps READY when done.
-        doneText: 'Weapons reported horizon status.',
+        doneText: 'Periscope raised. Horizon reported.',
       },
       {
         id: 's5',
-        captainSay: '"Engineer \u2014 check all systems. Give me a status report."',
-        captainHint: 'Engineer will read the system panels and hull gauge.',
+        captainSay: '"Engineer \u2014 check all systems. Give me a full status report."',
+        captainHint: 'Wait for Engineer to read the gauges and report.',
         crewTasks: {
           e: {
-            text: 'Check your HULL gauge and all 5 SYSTEM panels. Report any problems to Captain.',
-            hint: 'Say "Hull is good" and name any systems that are not ONLINE, then tap REPORT READY.',
+            text: 'Check your HULL gauge and all 5 SYSTEM panels. Check power levels.',
+            hint: 'Say "Engineer \u2014 all systems green" or report any issues to Captain, then tap REPORT READY.',
           },
         },
         waitFor: ['e'],
         // Verbal confirmation — no autoConfirmOn. Engineer taps READY when done.
-        doneText: 'Engineer gave system status.',
+        doneText: 'Engineer systems check complete.',
       },
       {
         id: 's6',
         captainSay: '"All stations \u2014 this is HMS Leviathan. We are underway. Good hunting."',
-        captainHint: 'Mission complete \u2014 tap CONTINUE to finish.',
+        captainHint: 'No confirmations needed. This is the mission launch moment \u2014 tap CONTINUE.',
         crewTasks: {},
         waitFor: [],
+        sideEffects: [
+          { type: 'PLAY_TONE', tone: 'missionStart' },
+        ],
         // Captain manually advances. End of mission.
-        doneText: 'Mission 01 complete. Crew oriented.',
+        doneText: 'Mission underway.',
+      },
+    ],
+  },
+
+  // =========================================================================
+  // M02 — SEEK AND DESTROY
+  // Hunt and eliminate the enemy contact in sector 4.
+  // Builds on M01: same patterns, escalates to combat.
+  // =========================================================================
+  M02: {
+    key: 'M02',
+    badge: 'M02 \u00B7 SEEK & DESTROY',
+    name: 'SEEK AND DESTROY',
+    brief: 'Hunt and eliminate the enemy contact in sector 4.',
+    steps: [
+      {
+        id: 's1',
+        captainSay: '"All stations \u2014 we have an enemy contact in sector 4. Battle stations."',
+        captainHint: 'Wait for all four stations to acknowledge battle stations.',
+        crewTasks: {
+          s: {
+            text: 'Battle stations. Stay on your scope \u2014 we need that contact.',
+            hint: 'Say "Sonar \u2014 battle stations" to Captain. Captain is about to order a ping.',
+          },
+          n: {
+            text: 'Battle stations. Maintain current heading and depth.',
+            hint: 'Say "Navigator \u2014 battle stations" to Captain. Wait for the next order.',
+          },
+          w: {
+            text: 'Battle stations. Check tube count and report.',
+            hint: 'Say "Weapons \u2014 [N] torpedoes loaded" to Captain.',
+          },
+          e: {
+            text: 'Battle stations. Check hull and reactor. Keep cooling steady.',
+            hint: 'Say "Engineer \u2014 battle stations, all green" to Captain.',
+          },
+        },
+        waitFor: ['s', 'n', 'w', 'e'],
+        // No autoConfirmOn — verbal acknowledgement, READY taps drive it.
+        doneText: 'All stations at battle readiness.',
+      },
+      {
+        id: 's2',
+        captainSay: '"Sonar \u2014 ping the water. Find that contact. Tell me the bearing."',
+        captainHint: 'Wait for Sonar to ping. Watch the radar for the contact to appear.',
+        crewTasks: {
+          s: {
+            text: 'Press PING now. Find the contact. Read the bearing out loud.',
+            hint: 'Example: "Sonar \u2014 contact bearing 034, 17 kilometers, close range."',
+          },
+        },
+        waitFor: ['s'],
+        autoConfirmOn: { role: 's', trigger: 'SONAR_PING' },
+        doneText: 'Sonar detected and reported contact.',
+      },
+      {
+        id: 's3',
+        captainSay: '"Navigator \u2014 come to bearing 034. Ahead Two Thirds. Close the distance."',
+        captainHint: 'Watch the radar \u2014 sub should start closing on the red contact.',
+        crewTasks: {
+          n: {
+            text: 'Set heading to 034\u00B0. Throttle to AHEAD 2/3.',
+            hint: 'Say "Navigator \u2014 on intercept course, ahead two thirds" to Captain.',
+          },
+        },
+        waitFor: ['n'],
+        // Auto-confirms only when speed is 2/3 AND heading is within 8° of 034.
+        autoConfirmOn: {
+          role: 'n',
+          trigger: 'SET_SPEED',
+          requireState: { speed: '2/3', heading: { near: 34, tolerance: 8 } },
+        },
+        doneText: 'Navigator on intercept course.',
+      },
+      {
+        id: 's4',
+        captainSay: '"Navigator \u2014 periscope depth. Take us up to 18 meters."',
+        captainHint: 'Watch the depth indicator. It should drop to 18m.',
+        crewTasks: {
+          n: {
+            text: 'Set depth to PERISCOPE \u2014 18 meters.',
+            hint: 'Tap the PERISCOPE preset on your depth panel. Say "Navigator \u2014 at periscope depth" to Captain.',
+          },
+        },
+        waitFor: ['n'],
+        autoConfirmOn: {
+          role: 'n',
+          trigger: 'SET_DEPTH',
+          requireState: { depth: { equals: 18 } },
+        },
+        doneText: 'At periscope depth.',
+      },
+      {
+        id: 's5',
+        captainSay: '"Weapons \u2014 raise the scope. Find TYPHOON-CLASS. Lock on. Do NOT fire yet."',
+        captainHint: 'Wait for Weapons to confirm lock. Then authorize fire next.',
+        crewTasks: {
+          w: {
+            text: 'Switch to PERISCOPE mode. Tap the red TYPHOON-CLASS contact to lock. Do NOT fire \u2014 wait for Captain.',
+            hint: 'Watch for the lock arc to complete. Say "Weapons \u2014 locked on TYPHOON-CLASS" to Captain, then tap REPORT READY.',
+          },
+        },
+        waitFor: ['w'],
+        // TODO: switch to autoConfirmOn { trigger: 'WEAPONS_LOCK' } once the
+        // WeaponsStation lock-on action sends a server message. For now this
+        // step relies on Weapons tapping REPORT READY after verbal confirmation.
+        doneText: 'Weapons locked on target.',
+      },
+      {
+        id: 's6',
+        captainSay: '"All stations \u2014 stand by. Weapons \u2014 you are authorized to fire. Take the shot."',
+        captainHint: 'Watch the periscope for torpedo impact.',
+        crewTasks: {
+          w: {
+            text: 'Captain authorized fire. Press FIRE TORPEDO now.',
+            hint: 'After firing, say "Weapons \u2014 torpedo away" to Captain.',
+          },
+        },
+        waitFor: ['w'],
+        autoConfirmOn: { role: 'w', trigger: 'FIRE_TORPEDO' },
+        doneText: 'Torpedo fired on Captain\'s authorization.',
       },
     ],
   },
