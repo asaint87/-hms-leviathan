@@ -256,7 +256,12 @@ export function WeaponsStation() {
       ctx.fillText(String(Math.round(vb)).padStart(3, '0') + '\u00B0', W / 2, stripH + 12);
 
       // ── ENEMY SHIPS (positioned by actual bearing) ──
-      const liveEnemies = gs?.enemies.filter((e) => !e.destroyed && e.detected) ?? [];
+      // Pulse-slow contacts (e.g. MT0 deep signal) are excluded — narrative is
+      // "below test depth," so they're audible on sonar but invisible through
+      // the periscope. They still appear in the target list on the right.
+      const liveEnemies = gs?.enemies.filter(
+        (e) => !e.destroyed && e.detected && e.style !== 'pulse-slow'
+      ) ?? [];
       liveEnemies.forEach((e) => {
         const bearingDiff = ((e.bearing - vb + 540) % 360) - 180;
         const sx = W / 2 + (bearingDiff / degPerPx);
@@ -833,26 +838,40 @@ function TargetRow({ enemy, selected, viewBearing, onSelect }: {
   const hitCol = hitPct > 70 ? Colors.green : hitPct > 50 ? Colors.amber : Colors.red;
   const bearingDiff = Math.abs(((enemy.bearing - viewBearing + 540) % 360) - 180);
   const inView = bearingDiff < 45;
+  // Pulse-slow contacts (e.g. MT0 deep signal) use the contact's own color
+  // and a distinct label so weapons can see they exist but aren't a normal
+  // tactical target. They are NOT visible through the periscope visual.
+  const isPulseSlow = enemy.style === 'pulse-slow';
+  const dotColor = isPulseSlow
+    ? (enemy.col || '#00e5cc')
+    : (enemy.identified ? Colors.red : Colors.amber);
+  const nameColor = isPulseSlow
+    ? (enemy.col || '#00e5cc')
+    : enemy.detected ? (enemy.identified ? '#ccc' : '#886600') : Colors.textDim;
   return (
     <TouchableOpacity
       style={[styles.targetRow, selected && styles.targetRowSelected]}
       onPress={onSelect} activeOpacity={0.8}
     >
       <View style={[styles.targetDot, {
-        backgroundColor: enemy.identified ? Colors.red : Colors.amber,
+        backgroundColor: dotColor,
         opacity: enemy.detected ? 1 : 0.4,
       }]} />
-      <Text style={[styles.targetName, {
-        color: enemy.detected ? (enemy.identified ? '#ccc' : '#886600') : Colors.textDim,
-      }]}>
-        {enemy.identified ? enemy.type : enemy.detected ? 'CONTACT' : 'UNDETECTED'}
+      <Text style={[styles.targetName, { color: nameColor }]}>
+        {enemy.identified
+          ? enemy.type
+          : isPulseSlow
+          ? enemy.type
+          : enemy.detected
+          ? 'CONTACT'
+          : 'UNDETECTED'}
       </Text>
       <Text style={styles.targetBearing}>{bearingLabel(enemy.bearing)}</Text>
       <Text style={[styles.targetRange, { color: enemy.range < 0.3 ? Colors.red : Colors.amber }]}>
         {rangeKm(enemy.range)}km
       </Text>
       <Text style={[styles.targetHitPct, { color: hitCol }]}>{hitPct}%</Text>
-      {inView && <Text style={styles.inViewBadge}>{'\u25C9'}</Text>}
+      {inView && !isPulseSlow && <Text style={styles.inViewBadge}>{'\u25C9'}</Text>}
       {selected && <Text style={styles.lockIcon}>{'\uD83D\uDD12'}</Text>}
     </TouchableOpacity>
   );

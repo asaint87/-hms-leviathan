@@ -509,6 +509,10 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
               bearing: 180,
               range: 0.95,
               identified: false,
+              // detected: true so the contact materializes on Sonar/Captain
+              // scopes the moment s8 begins — matches the task text
+              // "Something is on your screen. It wasn't there before."
+              detected: true,
               type: 'UNKNOWN \u2014 DEEP SIGNAL',
               col: '#00e5cc',
               style: 'pulse-slow',

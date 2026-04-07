@@ -8,6 +8,8 @@ import {
   Dimensions,
   PanResponder,
   Image,
+  Animated,
+  Easing,
 } from 'react-native';
 import { useGame } from '@/contexts/GameContext';
 import { Colors } from '@/constants/Colors';
@@ -134,14 +136,28 @@ function RadarScope({
           enemy.bearing - heading,
           enemy.range * (size / 2 - 6)
         );
+        const x = center + pos.x;
+        const y = center + pos.y;
+        // Deep signal contact — slow, diffuse, mysterious. Distinct from
+        // tactical contacts. Renders multiple animated rings + soft center.
+        if (enemy.style === 'pulse-slow') {
+          return (
+            <DeepSignalBlip
+              key={enemy.id}
+              x={x}
+              y={y}
+              color={enemy.col || '#00e5cc'}
+            />
+          );
+        }
         return (
           <View
             key={enemy.id}
             style={[
               styles.blip,
               {
-                left: center + pos.x - 5,
-                top: center + pos.y - 5,
+                left: x - 5,
+                top: y - 5,
                 backgroundColor: enemy.identified ? Colors.red : Colors.amber,
                 opacity: 0.6 + (enemy.strength || 0) * 0.4,
                 shadowColor: enemy.identified ? Colors.red : Colors.amber,
@@ -156,6 +172,103 @@ function RadarScope({
       <View style={[styles.ownShip, { left: center - 4, top: center - 4 }]} />
 
       <Text style={styles.hdgLabel}>{bearingLabel(heading)}</Text>
+    </View>
+  );
+}
+
+/**
+ * DeepSignalBlip — pulse-slow contact rendering for the captain's radar.
+ * Three layered Animated.Views: outer halo (slow scale), expanding ring
+ * (slow scale + fade), and a soft center dot. Distinct from tactical
+ * blips — diffuse, slower, ominous teal.
+ */
+function DeepSignalBlip({ x, y, color }: { x: number; y: number; color: string }) {
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 2400,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 2400,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  // Outer halo — large, scales between 1.0 and 1.4, opacity 0.18 → 0.08
+  const haloScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1.0, 1.4] });
+  const haloOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.18, 0.08] });
+
+  // Mid ring — scales 0.8 → 1.6, opacity 0.5 → 0 (ripples out and fades)
+  const ringScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1.6] });
+  const ringOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] });
+
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: '100%',
+        height: '100%',
+      }}
+    >
+      {/* Outer halo */}
+      <Animated.View
+        style={{
+          position: 'absolute',
+          left: x - 18,
+          top: y - 18,
+          width: 36,
+          height: 36,
+          borderRadius: 18,
+          backgroundColor: color,
+          opacity: haloOpacity,
+          transform: [{ scale: haloScale }],
+        }}
+      />
+      {/* Expanding ring */}
+      <Animated.View
+        style={{
+          position: 'absolute',
+          left: x - 14,
+          top: y - 14,
+          width: 28,
+          height: 28,
+          borderRadius: 14,
+          borderWidth: 1,
+          borderColor: color,
+          opacity: ringOpacity,
+          transform: [{ scale: ringScale }],
+        }}
+      />
+      {/* Soft center dot */}
+      <View
+        style={{
+          position: 'absolute',
+          left: x - 3,
+          top: y - 3,
+          width: 6,
+          height: 6,
+          borderRadius: 3,
+          backgroundColor: color,
+          shadowColor: color,
+          shadowRadius: 8,
+          shadowOpacity: 0.8,
+        }}
+      />
     </View>
   );
 }

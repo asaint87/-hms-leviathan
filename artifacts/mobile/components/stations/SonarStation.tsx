@@ -146,6 +146,65 @@ export function SonarStation() {
         const off = bearingRangeToOffset(c.bearing - heading, Math.min(c.range, 0.92));
         const ex = cx + off.x * r;
         const ey = cy + off.y * r;
+
+        // Deep signal contact — slow, diffuse, mysterious. Distinct from
+        // tactical contacts. Slower pulse, softer edges, "???" label.
+        if (c.style === 'pulse-slow') {
+          const t = Date.now() * 0.0008;
+          const teal = c.col || '#00e5cc';
+
+          // Outer halo — large radial gradient, very faint
+          const haloR = 22 + Math.sin(t) * 4;
+          const halo = ctx.createRadialGradient(ex, ey, 0, ex, ey, haloR);
+          halo.addColorStop(0, teal + '40');
+          halo.addColorStop(0.4, teal + '18');
+          halo.addColorStop(1, teal + '00');
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(ex, ey, haloR, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Three concentric expanding rings — staggered phases create
+          // a continuous slow ripple, much slower than tactical pulse
+          for (let ring = 0; ring < 3; ring++) {
+            const phase = ((t * 0.6 + ring * 0.33) % 1);
+            const ringR = 4 + phase * 20;
+            const alpha = (1 - phase) * 0.4;
+            if (alpha <= 0) continue;
+            ctx.beginPath();
+            ctx.arc(ex, ey, ringR, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(0,229,204,${alpha.toFixed(3)})`;
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+          }
+
+          // Broken distortion crosshair — signal interference, suggests
+          // the system can't quite resolve what it's seeing
+          const distAlpha = 0.12 + Math.sin(t * 1.5) * 0.06;
+          ctx.strokeStyle = `rgba(0,229,204,${distAlpha.toFixed(3)})`;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          ctx.moveTo(ex - 14, ey); ctx.lineTo(ex - 6, ey);
+          ctx.moveTo(ex + 6, ey); ctx.lineTo(ex + 14, ey);
+          ctx.moveTo(ex, ey - 14); ctx.lineTo(ex, ey - 6);
+          ctx.moveTo(ex, ey + 6); ctx.lineTo(ex, ey + 14);
+          ctx.stroke();
+
+          // Soft center dot — small, doesn't dominate
+          ctx.beginPath();
+          ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = teal + 'cc';
+          ctx.fill();
+
+          // Label — "???" in dim teal, signals unknown classification
+          ctx.fillStyle = teal + 'aa';
+          ctx.font = 'bold 8px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText('???', ex, ey + 22);
+          return; // skip the normal contact render below
+        }
+
+        // Normal tactical contact rendering
         const col = c.identified ? c.col || Colors.red : '#ffb300';
         ctx.beginPath(); ctx.arc(ex, ey, 5, 0, Math.PI * 2);
         ctx.fillStyle = col + '33'; ctx.fill();
