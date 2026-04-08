@@ -599,6 +599,8 @@ importers:
         specifier: ^0.31.9
         version: 0.31.9
 
+  lib/world: {}
+
   scripts:
     devDependencies:
       '@types/node':
