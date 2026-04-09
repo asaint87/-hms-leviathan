@@ -107,6 +107,28 @@ export const SPEED_KMS: Record<Speed, number> = {
 };
 
 // =============================================================================
+// Submarine speed → propulsion noise lookup
+// =============================================================================
+
+/**
+ * Maps the Submarine speed enum to a propulsion noise value (0-100).
+ * Used by detection rules — louder subs are easier for enemies to detect.
+ *
+ * Values are intentionally non-linear to make speed changes meaningful:
+ * patrol speeds (1/3, 2/3) stay quiet enough to be stealthy, FULL is loud,
+ * FLANK is essentially screaming "we are here." REVERSE is moderately loud
+ * due to wake turbulence at the screws.
+ */
+export const SPEED_NOISE: Record<Speed, number> = {
+  STOP: 5,
+  '1/3': 20,
+  '2/3': 45,
+  FULL: 75,
+  FLANK: 100,
+  REVERSE: 25,
+};
+
+// =============================================================================
 // Knots → km/s conversion (for Contact velocity)
 // =============================================================================
 
