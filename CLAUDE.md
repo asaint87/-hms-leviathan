@@ -6,6 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 HMS Leviathan — a real-time multiplayer submarine command game for 1-5 players. Each player takes a station role (Captain, Navigator, Sonar, Engineer, Weapons) aboard a submarine. Built as a TypeScript monorepo with pnpm workspaces.
 
+## World State Rule
+
+The WORLD object is the single source of truth for everything that affects what another player sees, hears, or experiences. Three things are legitimate exceptions:
+
+1. **Client-side UI state** — tab selection, animation state, gesture position, scroll position. Lives in React `useState` on the local device only. Never touches the server.
+2. **Ephemeral server infrastructure** — `setTimeout` references, WebSocket connection objects, looped tone tracking, room codes, session IDs. Lives on the `Room` object. Never goes into `world`. Not game reality.
+3. **Avatar data** — sent once on player join, cached on clients. Not repeated in every `WORLD_UPDATE` to avoid packet bloat.
+
+**The test:** if a player's phone died and they rejoined mid-game, would they need this information to pick up where they left off? If yes — it's world state. If no — it stays local or ephemeral.
+
+The full World schema lives in `lib/world/src/types.ts`. The mutation contract: client sends action → server validates → server mutates `world` → server calls `recomputeDerived(world)` → server broadcasts `WORLD_UPDATE` → all clients re-render. **No client-side world state. Ever.**
+
+Reference docs in the project root: `WORLD.md` (state spec), `MISSIONS.md` (12-mission arc bible), `SYSTEMS.md` (5-archetype interaction reference). Read these before designing any new game feature.
+
 ## Monorepo Layout
 
 - **`artifacts/api-server`** — Express + WebSocket game server (Node.js, esbuild bundle)
