@@ -10,8 +10,21 @@ import { Platform } from 'react-native';
 import { playSound, stopSound } from '@/utils/sounds';
 import type { MissionThread } from '@/components/game/missionThreads';
 
-export type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
-export type Speed = 'STOP' | '1/3' | '2/3' | 'FULL';
+// All canonical game types come from @workspace/world.
+// This file used to declare its own GameState/Enemy/Speed/SystemStatus —
+// those are gone. The single source of truth is the World object the
+// server broadcasts via WORLD_UPDATE.
+import {
+  type World,
+  type Contact,
+  type Speed,
+  type RoleKey,
+  type Crew,
+  type CrewMember,
+  type Alert,
+} from '@workspace/world';
+
+export type { World, Contact, Speed, RoleKey, Crew, CrewMember, Alert };
 
 export const ROLE_NAMES: Record<RoleKey, string> = {
   c: 'Captain',
@@ -29,25 +42,15 @@ export const ROLE_COLORS: Record<RoleKey, string> = {
   w: '#ff3030',
 };
 
-export interface SystemStatus {
-  id: string;
-  name: string;
-  status: 'ONLINE' | 'DEGRADED' | 'OFFLINE';
-}
+// -----------------------------------------------------------------------------
+// Backwards-compat alias: many station files import `Enemy` from this module.
+// Migrating them all in one commit; meanwhile, alias to `Contact`.
+// -----------------------------------------------------------------------------
+export type Enemy = Contact;
 
-export interface Enemy {
-  id: number;
-  bearing: number;
-  range: number;
-  type: string;
-  identified: boolean;
-  detected: boolean;
-  destroyed: boolean;
-  col: string;
-  strength: number;
-  /** Optional visual variant — e.g. 'pulse-slow' for deep mysterious contacts */
-  style?: 'normal' | 'pulse-slow';
-}
+// -----------------------------------------------------------------------------
+// Client-only state shapes (not in the world)
+// -----------------------------------------------------------------------------
 
 export interface CompletionOverlay {
   title: string;
@@ -55,31 +58,6 @@ export interface CompletionOverlay {
   body: string;
   nextMissionKey?: string;
   delayMs?: number;
-}
-
-export interface GameState {
-  hull: number;
-  torps: number;
-  torpReserve: number;
-  heading: number;
-  depth: number;
-  speed: Speed;
-  reactorTemp: number;
-  coolingRods: number;
-  power: number;
-  systems: SystemStatus[];
-  enemies: Enemy[];
-  crisisId: string | null;
-  missionId: string;
-  missionStep: number;
-  subMapX: number;
-  subMapY: number;
-}
-
-export interface PlayerInfo {
-  name: string;
-  role: RoleKey;
-  avatar?: string;
 }
 
 export interface VoteState {
@@ -105,24 +83,30 @@ export interface TorpedoEvent {
   timestamp: number;
 }
 
+// -----------------------------------------------------------------------------
+// Context value
+// -----------------------------------------------------------------------------
+
 interface GameContextValue {
   connected: boolean;
   roomCode: string | null;
   myName: string;
   myRole: RoleKey;
   myAvatar: string | null;
-  players: PlayerInfo[];
+  /** The full World object from the server. Null until first WORLD_UPDATE. */
+  world: World | null;
+  /**
+   * Avatars cache — keyed by role. Sent via AVATARS_SNAPSHOT (one-shot on
+   * join), NOT in WORLD_UPDATE per the World State Rule (CLAUDE.md exception #3).
+   */
+  crewAvatars: Partial<Record<RoleKey, string>>;
   phase: 'MENU' | 'LOBBY' | 'PLAYING' | 'COMPLETE';
-  gameState: GameState | null;
   crisis: { crisisId: string; def: { title: string; description: string } } | null;
   voteState: VoteState | null;
   actionLog: ActionLogEntry[];
   lastTorpedoEvent: TorpedoEvent | null;
-  crewReady: RoleKey[];
-  // Mission Thread Engine state:
+  // Mission Thread Engine state — driven by MISSION_ACTIVE / MISSION_STEP_ADVANCE
   activeMissionThread: MissionThread | null;
-  activeStepIdx: number;
-  stepConfirmations: Record<string, RoleKey[]>;
   completionOverlay: CompletionOverlay | null;
   /** Mission key whose brief overlay was last dismissed by the captain. */
   briefDismissedFor: string | null;
@@ -152,6 +136,7 @@ interface GameContextValue {
   captainAdvanceStep: () => void;
   dismissCompletionOverlay: () => void;
   dismissMissionBrief: () => void;
+  dismissAlert: (alertId: string) => void;
 }
 
 const GameContext = createContext<GameContextValue | null>(null);
@@ -180,9 +165,9 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [myName, setMyName] = useState('');
   const [myRole, setMyRole] = useState<RoleKey>('c');
   const [myAvatar, setMyAvatar] = useState<string | null>(null);
-  const [players, setPlayers] = useState<PlayerInfo[]>([]);
+  const [world, setWorld] = useState<World | null>(null);
+  const [crewAvatars, setCrewAvatars] = useState<Partial<Record<RoleKey, string>>>({});
   const [phase, setPhase] = useState<'MENU' | 'LOBBY' | 'PLAYING' | 'COMPLETE'>('MENU');
-  const [gameState, setGameState] = useState<GameState | null>(null);
   const [crisis, setCrisis] = useState<{
     crisisId: string;
     def: { title: string; description: string };
@@ -190,10 +175,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [voteState, setVoteState] = useState<VoteState | null>(null);
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [lastTorpedoEvent, setLastTorpedoEvent] = useState<TorpedoEvent | null>(null);
-  const [crewReady, setCrewReady] = useState<RoleKey[]>([]);
   const [activeMissionThread, setActiveMissionThread] = useState<MissionThread | null>(null);
-  const [activeStepIdx, setActiveStepIdx] = useState(0);
-  const [stepConfirmations, setStepConfirmations] = useState<Record<string, RoleKey[]>>({});
   const [completionOverlay, setCompletionOverlay] = useState<CompletionOverlay | null>(null);
   const [briefDismissedFor, setBriefDismissedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -255,34 +237,30 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             setRoomCode(String(msg['code']));
             setPhase('LOBBY');
             break;
-          case 'PLAYER_LIST':
-            setPlayers((msg['players'] as PlayerInfo[]) || []);
-            break;
           case 'GAME_START':
             setPhase('PLAYING');
             break;
-          case 'GAME_STATE': {
-            const newState = msg['state'] as GameState;
-            setGameState(newState);
-            if (msg['players']) setPlayers(msg['players'] as PlayerInfo[]);
-            if (msg['crewReady']) setCrewReady(msg['crewReady'] as RoleKey[]);
-            if (typeof msg['activeStepIdx'] === 'number') {
-              setActiveStepIdx(msg['activeStepIdx'] as number);
-            }
-            if (msg['stepConfirmations']) {
-              setStepConfirmations(msg['stepConfirmations'] as Record<string, RoleKey[]>);
-            }
-            if (prevHullRef.current > 0 && newState.hull < prevHullRef.current - 5) {
+          case 'WORLD_UPDATE': {
+            const newWorld = msg['world'] as World;
+            setWorld(newWorld);
+            // Hull damage sound effect — fire when hull drops by >5 since last update
+            if (
+              prevHullRef.current > 0 &&
+              newWorld.submarine.hullIntegrity < prevHullRef.current - 5
+            ) {
               playSound('hullDamage');
             }
-            prevHullRef.current = newState.hull;
+            prevHullRef.current = newWorld.submarine.hullIntegrity;
+            break;
+          }
+          case 'AVATARS_SNAPSHOT': {
+            const incoming = (msg['avatars'] || {}) as Partial<Record<RoleKey, string>>;
+            setCrewAvatars(incoming);
             break;
           }
           case 'MISSION_ACTIVE': {
             const newThread = msg['thread'] as MissionThread;
             setActiveMissionThread(newThread);
-            setActiveStepIdx((msg['stepIdx'] as number) ?? 0);
-            setStepConfirmations({});
             setCompletionOverlay(null);
             // Reset brief dismissal so the new mission's brief overlay shows.
             setBriefDismissedFor(null);
@@ -293,10 +271,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             break;
           }
           case 'MISSION_STEP_ADVANCE': {
-            const idx = msg['stepIdx'] as number;
-            setActiveStepIdx(idx);
-            setStepConfirmations({});
-            setCrewReady([]);
+            // World already carries the new step index via mission.currentStep
             break;
           }
           case 'MISSION_COMPLETE_OVERLAY': {
@@ -318,12 +293,6 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
           case 'STOP_TONE': {
             const tone = String(msg['tone'] || '');
             try { stopSound(tone); } catch {}
-            break;
-          }
-          case 'MISSION_STEP': {
-            // Legacy fallback (no active thread on the server).
-            setCrewReady([]);
-            addLog(`Mission advancing to step ${(msg['missionStep'] as number) + 1}.`, 'info');
             break;
           }
           case 'CRISIS_START':
@@ -432,16 +401,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     send({ type: 'LEAVE_GAME' });
     setRoomCode(null);
     setPhase('MENU');
-    setGameState(null);
-    setPlayers([]);
+    setWorld(null);
+    setCrewAvatars({});
     setCrisis(null);
     setVoteState(null);
     setActionLog([]);
     setLastTorpedoEvent(null);
-    setCrewReady([]);
     setActiveMissionThread(null);
-    setActiveStepIdx(0);
-    setStepConfirmations({});
     setCompletionOverlay(null);
     setBriefDismissedFor(null);
     // Stop any looped tones still playing (e.g. abyssalPulse from MT0 s8)
@@ -485,6 +451,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     playSound('click');
   }, [send]);
   const setCooling = useCallback((level: number) => send({ type: 'SET_COOLING', level }), [send]);
+  const castVote = useCallback(
+    (vote: string) => {
+      send({ type: 'CAST_VOTE', vote });
+      setVoteState((prev) => (prev ? { ...prev, myVote: vote } : prev));
+    },
+    [send]
+  );
   const reportReady = useCallback(() => send({ type: 'CREW_READY' }), [send]);
   const startMission = useCallback(
     (missionKey: string) => send({ type: 'START_MISSION', missionKey }),
@@ -499,11 +472,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     () => send({ type: 'MISSION_BRIEF_DISMISS' }),
     [send]
   );
-  const castVote = useCallback(
-    (vote: string) => {
-      send({ type: 'CAST_VOTE', vote });
-      setVoteState((prev) => (prev ? { ...prev, myVote: vote } : prev));
-    },
+  const dismissAlert = useCallback(
+    (alertId: string) => send({ type: 'DISMISS_ALERT', alertId }),
     [send]
   );
 
@@ -515,17 +485,14 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         myName,
         myRole,
         myAvatar,
-        players,
+        world,
+        crewAvatars,
         phase,
-        gameState,
         crisis,
         voteState,
         actionLog,
         lastTorpedoEvent,
-        crewReady,
         activeMissionThread,
-        activeStepIdx,
-        stepConfirmations,
         completionOverlay,
         briefDismissedFor,
         error,
@@ -552,6 +519,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         captainAdvanceStep,
         dismissCompletionOverlay,
         dismissMissionBrief,
+        dismissAlert,
       }}
     >
       {children}

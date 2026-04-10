@@ -257,6 +257,12 @@ export interface CrewMember {
   xp: number;
 }
 
+// NOTE: Avatars are intentionally NOT in CrewMember per the World State
+// Rule (CLAUDE.md exception #3). Base64 portrait blobs are large; broadcasting
+// them in every WORLD_UPDATE causes packet bloat. Avatars are tracked
+// separately on the server's Room object and shipped via a one-shot
+// AVATARS_SNAPSHOT message on player join, then cached on clients.
+
 /**
  * The crew is a fixed-shape object with one slot per role. Empty seats
  * have connected: false, playerId: null. Single-char keys to match the

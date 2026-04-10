@@ -4,8 +4,11 @@
 // Mission Thread Engine — schema and registry for HMS Leviathan missions.
 // Modeled on the demo prototype's MISSION_THREADS object.
 
-export type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
-export type Speed = 'STOP' | '1/3' | '2/3' | 'FULL';
+// Re-export from @workspace/world so the mission engine and the world model
+// share a single source of truth for these types. This file owns the mission
+// schema (steps, side effects, autoConfirmOn) — it does NOT own RoleKey/Speed.
+export type { RoleKey, Speed } from '@workspace/world';
+import type { RoleKey, Speed } from '@workspace/world';
 
 /**
  * Optional state predicate for autoConfirmOn — confirms only if the room's
@@ -27,17 +30,41 @@ export interface CrewTask {
   hint: string;
 }
 
-/** Definition for a contact to be spawned via SPAWN_CONTACT side effect */
+/**
+ * Definition for a contact to be spawned via SPAWN_CONTACT side effect.
+ *
+ * Mission authors specify contacts in sub-relative polar coordinates
+ * (bearing + range fraction) for ergonomic readability — "spawn at
+ * bearing 180, range 0.95" matches how mission designers think about
+ * the tactical scope. The engine converts these to absolute world
+ * positions at spawn time, using the submarine's current position as
+ * the origin.
+ *
+ * Velocity is in knots (matches Contact.velocity in @workspace/world).
+ * Defaults to { speed: 0, heading: 0 } if absent — stationary contact.
+ */
 export interface ContactDefinition {
-  bearing: number;       // 0-360 degrees
-  range: number;         // 0-1 normalized (1 = max display range)
-  type: string;          // display name, e.g. "UNKNOWN — DEEP SIGNAL"
-  identified?: boolean;  // default false
-  detected?: boolean;    // default false
-  col?: string;          // hex color, default '#ff3030'
-  strength?: number;     // 0-1 signal strength, default 0.5
-  /** Optional visual variant — e.g. 'pulse-slow' for deep mysterious contacts */
-  style?: 'normal' | 'pulse-slow';
+  /** 0-360 degrees relative to the submarine at spawn time. */
+  bearing: number;
+  /** 0-1 normalized to TACTICAL_MAX_KM. */
+  range: number;
+  /** Display name, e.g. "TYPHOON-CLASS", "UNKNOWN — DEEP SIGNAL". */
+  type: string;
+  /** Default false. */
+  identified?: boolean;
+  /** Default false. */
+  detected?: boolean;
+  /** Hex color, default '#ff3030'. Renamed from `col` to match the world's Contact.color field. */
+  color?: string;
+  /** 0-1 signal strength, default 0.5. */
+  strength?: number;
+  /** Optional visual variant — e.g. 'pulse-slow' for deep mysterious contacts. */
+  style?: 'normal' | 'pulse-slow' | 'fragmented' | 'corrupted';
+  /**
+   * Optional velocity (knots, heading degrees). Default { speed: 0, heading: 0 }
+   * — a stationary contact like the deep signal in MT0 s8.
+   */
+  velocity?: { speed: number; heading: number };
 }
 
 /** Side effects that fire when a step becomes active */
@@ -514,9 +541,12 @@ export const MISSION_THREADS: Record<string, MissionThread> = {
               // "Something is on your screen. It wasn't there before."
               detected: true,
               type: 'UNKNOWN \u2014 DEEP SIGNAL',
-              col: '#00e5cc',
+              color: '#00e5cc',
               style: 'pulse-slow',
               strength: 0.3,
+              // Stationary — does not move. The deep signal is a fixed
+              // anomaly, not a maneuvering vessel.
+              velocity: { speed: 0, heading: 0 },
             },
           },
           { type: 'PLAY_TONE', tone: 'abyssalPulse', loop: true },

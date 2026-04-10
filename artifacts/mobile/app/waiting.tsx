@@ -30,7 +30,22 @@ const ROLE_ICONS: Record<RoleKey, string> = {
 export default function WaitingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { roomCode, players, phase, myRole, startGame, leaveGame } = useGame();
+  const { roomCode, world, crewAvatars, phase, myRole, startGame, leaveGame } = useGame();
+
+  // Build a normalized list of seated crew from world.crew + crewAvatars cache.
+  // Per the World State Rule, avatars are NOT in the world; they're in crewAvatars.
+  const ROLES_ORDER: RoleKey[] = ['c', 'n', 's', 'e', 'w'];
+  const seatedCrew = ROLES_ORDER
+    .map((role) => {
+      const member = world?.crew[role];
+      if (!member?.connected) return null;
+      return {
+        role,
+        name: member.playerName ?? 'CREW',
+        avatar: crewAvatars[role],
+      };
+    })
+    .filter((p): p is { role: RoleKey; name: string; avatar: string | undefined } => p !== null);
   const { stop } = useThemeMusic();
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
@@ -81,20 +96,20 @@ export default function WaitingScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardLabel}>CREW MANIFEST — {players.length} ABOARD</Text>
-        {players.length === 0 && (
+        <Text style={styles.cardLabel}>CREW MANIFEST — {seatedCrew.length} ABOARD</Text>
+        {seatedCrew.length === 0 && (
           <Text style={styles.emptyText}>No crew yet...</Text>
         )}
-        {players.map((p, i) => {
-          const col = Colors.roles[p.role as RoleKey] || Colors.roles.c;
+        {seatedCrew.map((p) => {
+          const col = Colors.roles[p.role] || Colors.roles.c;
           return (
-            <View key={`${p.name}-${i}`} style={styles.playerRow}>
+            <View key={p.role} style={styles.playerRow}>
               <View style={[styles.roleIcon, { backgroundColor: col.bg, borderColor: col.primary }]}>
                 {p.avatar ? (
                   <Image source={{ uri: p.avatar }} style={styles.avatarImg} />
                 ) : (
                   <MaterialCommunityIcons
-                    name={(ROLE_ICONS[p.role as RoleKey] || 'account') as any}
+                    name={(ROLE_ICONS[p.role] || 'account') as any}
                     size={18}
                     color={col.primary}
                   />
@@ -102,7 +117,7 @@ export default function WaitingScreen() {
               </View>
               <View style={styles.playerInfo}>
                 <Text style={[styles.playerName, { color: col.primary }]}>{p.name}</Text>
-                <Text style={styles.playerRole}>{ROLE_NAMES[p.role as RoleKey]}</Text>
+                <Text style={styles.playerRole}>{ROLE_NAMES[p.role]}</Text>
               </View>
               <View style={[styles.statusDot, { backgroundColor: Colors.green }]} />
             </View>
@@ -114,7 +129,7 @@ export default function WaitingScreen() {
         <Text style={styles.cardLabel}>MINIMUM CREW</Text>
         <View style={styles.roleChecklist}>
           {(['c', 'n', 's', 'e', 'w'] as RoleKey[]).map((r) => {
-            const filled = players.some((p) => p.role === r);
+            const filled = seatedCrew.some((p) => p.role === r);
             const col = Colors.roles[r];
             return (
               <View key={r} style={styles.checkRow}>

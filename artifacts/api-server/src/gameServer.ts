@@ -1,84 +1,70 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage, Server } from 'http';
 import {
+  // Types
+  type World,
+  type Crew,
+  type CrewMember,
+  type RoleKey,
+  type Speed,
+  type Contact,
+  type Alert,
+  type Position,
+  // Constants
+  TACTICAL_MAX_KM,
+  CRUSH_DEPTH,
+  MAX_DEPTH,
+  CRUSH_DAMAGE_PER_SECOND,
+  PERISCOPE_MAX_DEPTH,
+  REACTOR_MELTDOWN_TEMP,
+  // Functions
+  createInitialWorld,
+  recomputeDerived,
+  applyVelocityKnots,
+  applySubmarineMotion,
+  bearingRangeToOffset,
+  detectionRangeKm,
+  noiseFromSpeed,
+} from '@workspace/world';
+import {
   MISSION_THREADS,
-  MissionThread,
-  MissionStep,
-  SideEffect,
-  AutoConfirmTrigger,
-  RequireState,
+  type MissionThread,
+  type MissionStep,
+  type AutoConfirmTrigger,
+  type RequireState,
 } from './missions/threads';
 
-type RoleKey = 'c' | 'n' | 's' | 'e' | 'w';
-type Speed = 'STOP' | '1/3' | '2/3' | 'FULL';
-
-interface SystemStatus {
-  id: string;
-  name: string;
-  status: 'ONLINE' | 'DEGRADED' | 'OFFLINE';
-}
-
-interface Enemy {
-  id: number;
-  bearing: number;
-  range: number;
-  type: string;
-  identified: boolean;
-  detected: boolean;
-  destroyed: boolean;
-  col: string;
-  strength: number;
-  /** Optional visual variant — e.g. 'pulse-slow' for deep mysterious contacts */
-  style?: 'normal' | 'pulse-slow';
-}
-
-interface GameState {
-  hull: number;
-  torps: number;
-  torpReserve: number;
-  heading: number;
-  depth: number;
-  speed: Speed;
-  reactorTemp: number;
-  coolingRods: number;
-  power: number;
-  systems: SystemStatus[];
-  enemies: Enemy[];
-  crisisId: string | null;
-  missionId: string;
-  missionStep: number;
-  subMapX: number;
-  subMapY: number;
-}
-
-interface Player {
-  ws: WebSocket;
-  name: string;
-  role: RoleKey;
-  avatar?: string;
-}
+// =============================================================================
+// Room — server-side state for one game session
+//
+// Per CLAUDE.md World State Rule:
+//  - `world` is the single source of truth shipped via WORLD_UPDATE
+//  - Everything else on Room is ephemeral server infrastructure
+//    (exception #2) or avatars (exception #3, sent via AVATARS_SNAPSHOT)
+// =============================================================================
 
 interface Room {
   code: string;
-  players: Map<string, Player>;
-  gameState: GameState;
+  world: World;
   phase: 'LOBBY' | 'PLAYING' | 'COMPLETE';
+  // ── Ephemeral server infrastructure (exception #2) ──
   gameLoop: ReturnType<typeof setInterval> | null;
-  crewReady: Set<RoleKey>; // legacy fallback — confirmations for the current step
-  // Mission Thread Engine state:
-  activeMissionKey: string | null;
-  activeStepIdx: number;
-  /** stepId -> set of roles that have confirmed that step */
-  stepConfirmations: Map<string, Set<RoleKey>>;
-  /** Pending mission handoff timer (auto-start next mission after delay) */
   handoffTimer: ReturnType<typeof setTimeout> | null;
-  /** Tones currently playing on a loop, started by side effects */
+  /** Tones currently playing on a loop, started by side effects. */
   activeLoopedTones: Set<string>;
+  /** Crisis state mirror — kept ephemeral for the legacy CrisisBanner flow. */
+  crisisActive: boolean;
+  // ── Avatar cache (exception #3 — never in WORLD_UPDATE) ──
+  avatars: Partial<Record<RoleKey, string>>;
 }
 
 const rooms = new Map<string, Room>();
 const socketToRoom = new Map<WebSocket, string>();
-const socketToPlayerId = new Map<WebSocket, string>();
+const socketToRole = new Map<WebSocket, RoleKey>();
+
+// =============================================================================
+// Room helpers
+// =============================================================================
 
 function generateCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -90,176 +76,212 @@ function generateCode(): string {
   return code;
 }
 
-function createInitialGameState(): GameState {
+function createRoom(code: string): Room {
   return {
-    hull: 100,
-    torps: 4,
-    torpReserve: 2,
-    heading: 0,
-    depth: 142,
-    speed: 'STOP',
-    reactorTemp: 280,
-    coolingRods: 50,
-    power: 85,
-    systems: [
-      { id: 'propulsion', name: 'PROPULSION', status: 'ONLINE' },
-      { id: 'weapons', name: 'WEAPONS SYS', status: 'ONLINE' },
-      { id: 'sonar', name: 'SONAR ARRAY', status: 'ONLINE' },
-      { id: 'comms', name: 'COMMS', status: 'ONLINE' },
-      { id: 'life_support', name: 'LIFE SUPPORT', status: 'ONLINE' },
-    ],
-    enemies: [
-      {
-        id: 1,
-        bearing: 34,
-        range: 0.28,
-        type: 'TYPHOON-CLASS',
-        identified: false,
-        detected: false,
-        destroyed: false,
-        col: '#ff3030',
-        strength: 0,
-      },
-      {
-        id: 2,
-        bearing: 210,
-        range: 0.55,
-        type: 'DESTROYER',
-        identified: false,
-        detected: false,
-        destroyed: false,
-        col: '#ff8c00',
-        strength: 0,
-      },
-    ],
-    crisisId: null,
-    missionId: 'M01',
-    missionStep: 0,
-    subMapX: 0.5,
-    subMapY: 0.5,
+    code,
+    world: createInitialWorld(),
+    phase: 'LOBBY',
+    gameLoop: null,
+    handoffTimer: null,
+    activeLoopedTones: new Set(),
+    crisisActive: false,
+    avatars: {},
   };
 }
 
+/** Look up the player who sent this socket message. */
+function playerFromSocket(
+  ws: WebSocket,
+): { room: Room; role: RoleKey; member: CrewMember } | null {
+  const roomCode = socketToRoom.get(ws);
+  if (!roomCode) return null;
+  const room = rooms.get(roomCode);
+  if (!room) return null;
+  const role = socketToRole.get(ws);
+  if (!role) return null;
+  return { room, role, member: room.world.crew[role] };
+}
+
+// =============================================================================
+// Broadcasting
+// =============================================================================
+
 function broadcastToRoom(room: Room, message: object) {
   const data = JSON.stringify(message);
-  room.players.forEach((player) => {
-    if (player.ws.readyState === WebSocket.OPEN) {
-      player.ws.send(data);
+  // Iterate sockets via socketToRole — sockets connected to this room
+  for (const [ws, otherRoomCode] of socketToRoom) {
+    if (otherRoomCode !== room.code) continue;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
     }
-  });
-}
-
-function broadcastGameState(room: Room) {
-  // Send player names/roles but NOT avatars — avatars are large base64 blobs
-  // that only need to be sent once via PLAYER_LIST, not every 500ms tick
-  // Mission engine state is included so reconnecting clients can recover.
-  const stepConfirmations: Record<string, RoleKey[]> = {};
-  for (const [stepId, roles] of room.stepConfirmations) {
-    stepConfirmations[stepId] = Array.from(roles);
   }
+}
+
+/**
+ * Recompute derived fields and broadcast the full World snapshot.
+ * Called after any state mutation. The recompute pass updates
+ * Environment.depthZone, ReactorSystem.zone, and every Contact's bearing/range.
+ */
+function broadcastWorld(room: Room) {
+  recomputeDerived(room.world);
   broadcastToRoom(room, {
-    type: 'GAME_STATE',
-    state: room.gameState,
-    players: Array.from(room.players.values()).map((p) => ({
-      name: p.name,
-      role: p.role,
-    })),
-    crewReady: Array.from(room.crewReady),
-    activeMissionKey: room.activeMissionKey,
-    activeStepIdx: room.activeStepIdx,
-    stepConfirmations,
+    type: 'WORLD_UPDATE',
+    world: room.world,
   });
 }
 
-function broadcastPlayerList(room: Room) {
+/** Broadcast the avatar cache. Sent on player join, NOT in WORLD_UPDATE. */
+function broadcastAvatars(room: Room) {
   broadcastToRoom(room, {
-    type: 'PLAYER_LIST',
-    players: Array.from(room.players.values()).map((p) => ({
-      name: p.name,
-      role: p.role,
-      avatar: p.avatar,
-    })),
+    type: 'AVATARS_SNAPSHOT',
+    avatars: room.avatars,
   });
 }
 
 function actionLog(
   room: Room,
   text: string,
-  kind: 'info' | 'kill' | 'warn' | 'crit' = 'info'
+  kind: 'info' | 'kill' | 'warn' | 'crit' = 'info',
 ) {
   broadcastToRoom(room, { type: 'ACTION_LOG', text, kind });
+}
+
+// =============================================================================
+// Crew seat management
+// =============================================================================
+
+function emptyCrewMember(): CrewMember {
+  return {
+    connected: false,
+    playerId: null,
+    playerName: null,
+    level: 1,
+    xp: 0,
+  };
+}
+
+/**
+ * Try to seat a player in a role. Returns true on success, false if the
+ * seat is already taken by a different player. The new design enforces
+ * one-player-per-role; duplicate joins are rejected (the lobby UI surfaces
+ * the error and the player picks another seat).
+ */
+function seatPlayer(
+  room: Room,
+  role: RoleKey,
+  playerId: string,
+  playerName: string,
+  avatar: string | undefined,
+): boolean {
+  const existing = room.world.crew[role];
+  if (existing.connected && existing.playerId !== playerId) {
+    return false; // seat taken by someone else
+  }
+  room.world.crew[role] = {
+    connected: true,
+    playerId,
+    playerName,
+    level: existing.level || 1,
+    xp: existing.xp || 0,
+  };
+  if (avatar) {
+    room.avatars[role] = avatar;
+  }
+  return true;
+}
+
+function unseatPlayer(room: Room, role: RoleKey) {
+  room.world.crew[role] = emptyCrewMember();
+  delete room.avatars[role];
+}
+
+// =============================================================================
+// Reactor / hull / motion tick
+// =============================================================================
+
+/** Reactor heat load by speed setting (game-tuned, not realistic). */
+const REACTOR_LOAD_BY_SPEED: Record<Speed, number> = {
+  STOP: 20,
+  '1/3': 40,
+  '2/3': 70,
+  FULL: 100,
+  FLANK: 140,
+  REVERSE: 30,
+};
+
+function tickPhysics(room: Room) {
+  const w = room.world;
+  const dtSec = 0.5; // 500ms tick
+
+  // ── Reactor temp drift ──
+  const reactorLoad = REACTOR_LOAD_BY_SPEED[w.submarine.speed];
+  const coolingEffect = w.systems.reactor.coolingLevel * 1.5;
+  const tempDelta = (reactorLoad - coolingEffect) * 0.025;
+  w.systems.reactor.temp = Math.max(180, Math.min(500, w.systems.reactor.temp + tempDelta));
+
+  // ── Reactor crisis check ──
+  if (w.systems.reactor.temp >= REACTOR_MELTDOWN_TEMP && !room.crisisActive) {
+    room.crisisActive = true;
+    pushAlert(w, 'REACTOR_CRITICAL', 'Reactor temperature critical — insert cooling rods now', 'crit');
+    broadcastToRoom(room, {
+      type: 'CRISIS_START',
+      crisisId: 'REACTOR_MELTDOWN',
+      def: {
+        title: 'REACTOR MELTDOWN',
+        description: 'Reactor temperature critical! Insert cooling rods to 95%+',
+      },
+    });
+    actionLog(room, 'CRISIS: REACTOR MELTDOWN — temperature critical!', 'crit');
+  } else if (room.crisisActive && w.systems.reactor.temp < 400) {
+    room.crisisActive = false;
+    dismissAlertsByType(w, 'REACTOR_CRITICAL');
+    broadcastToRoom(room, { type: 'CRISIS_RESOLVE' });
+    actionLog(room, 'CRISIS RESOLVED — reactor temperature stable.', 'info');
+  }
+
+  // ── Reactor damage to hull when over meltdown threshold ──
+  if (w.systems.reactor.temp >= REACTOR_MELTDOWN_TEMP) {
+    w.submarine.hullIntegrity = Math.max(0, w.submarine.hullIntegrity - 0.3);
+  }
+
+  // ── Crush depth damage ──
+  if (w.submarine.depth > CRUSH_DEPTH) {
+    w.submarine.hullIntegrity = Math.max(
+      0,
+      w.submarine.hullIntegrity - CRUSH_DAMAGE_PER_SECOND * dtSec,
+    );
+  }
+
+  // ── Submarine motion ──
+  w.submarine.position = applySubmarineMotion(
+    w.submarine.position,
+    w.submarine.heading,
+    w.submarine.speed,
+    dtSec,
+  );
+
+  // ── Propulsion noise from speed ──
+  w.systems.propulsion.noise = noiseFromSpeed(w.submarine.speed);
+
+  // ── Contact motion (deterministic — no random walk) ──
+  for (const contact of w.contacts) {
+    if (contact.destroyed) continue;
+    contact.position = applyVelocityKnots(contact.position, contact.velocity, dtSec);
+  }
+
+  // ── Hull lost ──
+  if (w.submarine.hullIntegrity <= 0 && room.phase === 'PLAYING') {
+    room.phase = 'COMPLETE';
+    broadcastToRoom(room, { type: 'GAME_OVER', reason: 'Hull integrity lost — all hands lost.' });
+    stopGameLoop(room);
+  }
 }
 
 function startGameLoop(room: Room) {
   if (room.gameLoop) return;
   room.gameLoop = setInterval(() => {
-    const gs = room.gameState;
-
-    const speedMultiplier: Record<Speed, number> = {
-      STOP: 0.2,
-      '1/3': 0.4,
-      '2/3': 0.7,
-      FULL: 1.0,
-    };
-    const reactorLoad = speedMultiplier[gs.speed] * 100;
-    const coolingEffect = gs.coolingRods * 1.5;
-    const tempDelta = (reactorLoad - coolingEffect) * 0.025;
-    gs.reactorTemp = Math.max(180, Math.min(500, gs.reactorTemp + tempDelta));
-
-    if (gs.reactorTemp >= 450 && !gs.crisisId) {
-      gs.crisisId = 'REACTOR_MELTDOWN';
-      broadcastToRoom(room, {
-        type: 'CRISIS_START',
-        crisisId: 'REACTOR_MELTDOWN',
-        def: {
-          title: 'REACTOR MELTDOWN',
-          description: 'Reactor temperature critical! Insert cooling rods to 95%+',
-        },
-      });
-      actionLog(room, 'CRISIS: REACTOR MELTDOWN — temperature critical!', 'crit');
-    } else if (gs.crisisId === 'REACTOR_MELTDOWN' && gs.reactorTemp < 400) {
-      gs.crisisId = null;
-      broadcastToRoom(room, { type: 'CRISIS_RESOLVE' });
-      actionLog(room, 'CRISIS RESOLVED — reactor temperature stable.', 'info');
-    }
-
-    if (gs.reactorTemp >= 450) {
-      gs.hull = Math.max(0, gs.hull - 0.3);
-    }
-
-    const speedKnots: Record<Speed, number> = { STOP: 0, '1/3': 5, '2/3': 12, FULL: 20 };
-    const knots = speedKnots[gs.speed];
-    if (knots > 0) {
-      const headingRad = (gs.heading * Math.PI) / 180;
-      gs.subMapX = Math.max(0.05, Math.min(0.95, gs.subMapX + Math.sin(headingRad) * knots * 0.0000015));
-      gs.subMapY = Math.max(0.05, Math.min(0.95, gs.subMapY - Math.cos(headingRad) * knots * 0.0000015));
-    }
-
-    gs.enemies.forEach((enemy) => {
-      if (!enemy.destroyed) {
-        enemy.bearing = ((enemy.bearing + (Math.random() - 0.5) * 0.4) + 360) % 360;
-        enemy.range = Math.max(0.05, Math.min(0.95, enemy.range + (Math.random() - 0.5) * 0.001));
-      }
-    });
-
-    const aliveEnemies = gs.enemies.filter((e) => !e.destroyed);
-    if (aliveEnemies.length === 0 && room.phase === 'PLAYING') {
-      room.phase = 'COMPLETE';
-      broadcastToRoom(room, {
-        type: 'MISSION_COMPLETE',
-        missionId: gs.missionId,
-        xp: { c: 150, n: 100, s: 100, e: 100, w: 150 },
-      });
-      stopGameLoop(room);
-    }
-
-    if (gs.hull <= 0 && room.phase === 'PLAYING') {
-      room.phase = 'COMPLETE';
-      broadcastToRoom(room, { type: 'GAME_OVER', reason: 'Hull integrity lost — all hands lost.' });
-      stopGameLoop(room);
-    }
-
-    broadcastGameState(room);
+    tickPhysics(room);
+    broadcastWorld(room);
   }, 500);
 }
 
@@ -270,22 +292,55 @@ function stopGameLoop(room: Room) {
   }
 }
 
-// =========================================================
-// MISSION THREAD ENGINE
-// =========================================================
+// =============================================================================
+// Alerts
+// =============================================================================
+
+function pushAlert(
+  world: World,
+  type: Alert['type'],
+  message: string,
+  severity: Alert['severity'],
+) {
+  // Don't duplicate active alerts of the same type
+  if (world.alerts.some((a) => a.type === type && !a.dismissed)) return;
+  world.alerts.push({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    type,
+    message,
+    severity,
+    timestamp: Date.now(),
+    dismissed: false,
+  });
+}
+
+function dismissAlertsByType(world: World, type: Alert['type']) {
+  for (const alert of world.alerts) {
+    if (alert.type === type) alert.dismissed = true;
+  }
+}
+
+// =============================================================================
+// Mission Thread Engine
+// =============================================================================
 
 function getActiveThread(room: Room): MissionThread | null {
-  if (!room.activeMissionKey) return null;
-  return MISSION_THREADS[room.activeMissionKey] ?? null;
+  if (!room.world.mission.activeMissionKey) return null;
+  return MISSION_THREADS[room.world.mission.activeMissionKey] ?? null;
 }
 
 function getCurrentStep(room: Room): MissionStep | null {
   const thread = getActiveThread(room);
   if (!thread) return null;
-  return thread.steps[room.activeStepIdx] ?? null;
+  return thread.steps[room.world.mission.currentStep] ?? null;
 }
 
-/** Stop all looped tones started by previous steps */
+/** Initialize a fresh per-step confirmation map (all roles false). */
+function freshStepConfirmations(): Record<RoleKey, boolean> {
+  return { c: false, n: false, s: false, e: false, w: false };
+}
+
+/** Stop all looped tones started by previous steps. */
 function clearLoopedTones(room: Room) {
   for (const tone of room.activeLoopedTones) {
     broadcastToRoom(room, { type: 'STOP_TONE', tone });
@@ -300,17 +355,27 @@ function applyStepSideEffects(room: Room, step: MissionStep) {
     switch (effect.type) {
       case 'SPAWN_CONTACT': {
         const c = effect.contact;
+        // Convert sub-relative bearing+range to absolute world position.
+        // Use the submarine's CURRENT position as the origin at spawn time.
+        const offset = bearingRangeToOffset(c.bearing, c.range * TACTICAL_MAX_KM);
+        const position: Position = {
+          x: room.world.submarine.position.x + offset.x,
+          y: room.world.submarine.position.y + offset.y,
+        };
         const nextId =
-          room.gameState.enemies.reduce((max, e) => Math.max(max, e.id), 0) + 1;
-        room.gameState.enemies.push({
+          room.world.contacts.reduce((max, contact) => Math.max(max, contact.id), 0) + 1;
+        room.world.contacts.push({
           id: nextId,
-          bearing: c.bearing,
-          range: c.range,
-          type: c.type,
+          position,
+          velocity: c.velocity ?? { speed: 0, heading: 0 },
+          // Derived — recomputeDerived() at next broadcast will fill these
+          bearing: 0,
+          range: 0,
           identified: c.identified ?? false,
           detected: c.detected ?? false,
           destroyed: false,
-          col: c.col ?? '#ff3030',
+          type: c.type,
+          color: c.color ?? '#ff3030',
           strength: c.strength ?? 0.5,
           style: c.style ?? 'normal',
         });
@@ -334,7 +399,7 @@ function applyStepSideEffects(room: Room, step: MissionStep) {
   }
 }
 
-/** Initialize a mission thread on a room. Resets step state and broadcasts. */
+/** Initialize a mission thread. Resets step state and broadcasts. */
 function initMission(room: Room, missionKey: string) {
   const thread = MISSION_THREADS[missionKey];
   if (!thread) {
@@ -349,21 +414,24 @@ function initMission(room: Room, missionKey: string) {
   }
   clearLoopedTones(room);
 
-  room.activeMissionKey = missionKey;
-  room.activeStepIdx = 0;
-  room.stepConfirmations.clear();
-  room.crewReady.clear();
-  room.gameState.missionId = missionKey;
-  room.gameState.missionStep = 0;
+  room.world.mission.activeMissionKey = missionKey;
+  room.world.mission.currentStep = 0;
+  room.world.mission.stepConfirmations = {};
+  room.world.mission.handoffTimer = false;
+
+  // Pre-init the first step's confirmation slot
+  const firstStep = thread.steps[0];
+  if (firstStep) {
+    room.world.mission.stepConfirmations[firstStep.id] = freshStepConfirmations();
+  }
 
   broadcastToRoom(room, { type: 'MISSION_ACTIVE', thread, stepIdx: 0 });
   actionLog(room, `MISSION THREAD: ${thread.name} — Step 1 active`, 'info');
 
   // Apply side effects of the first step
-  const firstStep = thread.steps[0];
   if (firstStep) applyStepSideEffects(room, firstStep);
 
-  broadcastGameState(room);
+  broadcastWorld(room);
 }
 
 /** Advance to the next step or complete the mission. */
@@ -374,31 +442,31 @@ function advanceStep(room: Room) {
   // Stop any looped tones from the step we're leaving
   clearLoopedTones(room);
 
-  const nextIdx = room.activeStepIdx + 1;
+  const nextIdx = room.world.mission.currentStep + 1;
   if (nextIdx >= thread.steps.length) {
     completeMission(room);
     return;
   }
 
-  room.activeStepIdx = nextIdx;
-  room.gameState.missionStep = nextIdx;
-  room.crewReady.clear();
+  room.world.mission.currentStep = nextIdx;
+
+  // Pre-init the new step's confirmation slot
+  const nextStep = thread.steps[nextIdx];
+  room.world.mission.stepConfirmations[nextStep.id] = freshStepConfirmations();
 
   broadcastToRoom(room, {
     type: 'MISSION_STEP_ADVANCE',
     stepIdx: nextIdx,
-    stepId: thread.steps[nextIdx].id,
+    stepId: nextStep.id,
   });
-  // Backwards-compat broadcast for clients still listening to MISSION_STEP
-  broadcastToRoom(room, { type: 'MISSION_STEP', missionStep: nextIdx });
   actionLog(
     room,
-    `Thread step ${nextIdx + 1}: ${thread.steps[nextIdx].doneText || ''}`,
-    'info'
+    `Thread step ${nextIdx + 1}: ${nextStep.doneText || ''}`,
+    'info',
   );
 
-  applyStepSideEffects(room, thread.steps[nextIdx]);
-  broadcastGameState(room);
+  applyStepSideEffects(room, nextStep);
+  broadcastWorld(room);
 }
 
 /** Complete the active mission. Triggers handoff if defined. */
@@ -411,6 +479,7 @@ function completeMission(room: Room) {
 
   if (thread.handoff) {
     const { nextMission, delayMs, completionOverlay } = thread.handoff;
+    room.world.mission.handoffTimer = true;
     broadcastToRoom(room, {
       type: 'MISSION_COMPLETE_OVERLAY',
       title: completionOverlay?.title ?? 'MISSION COMPLETE',
@@ -422,10 +491,11 @@ function completeMission(room: Room) {
     if (room.handoffTimer) clearTimeout(room.handoffTimer);
     room.handoffTimer = setTimeout(() => {
       room.handoffTimer = null;
+      room.world.mission.handoffTimer = false;
       initMission(room, nextMission);
     }, delayMs);
+    broadcastWorld(room);
   } else {
-    // No handoff — fall through to existing MISSION_COMPLETE end-game flow
     broadcastToRoom(room, {
       type: 'MISSION_COMPLETE',
       missionId: thread.key,
@@ -439,20 +509,18 @@ function confirmStep(room: Room, role: RoleKey): boolean {
   const step = getCurrentStep(room);
   if (!thread || !step) return false;
 
-  let confirmed = room.stepConfirmations.get(step.id);
-  if (!confirmed) {
-    confirmed = new Set();
-    room.stepConfirmations.set(step.id, confirmed);
+  // Ensure the step's confirmation slot exists, then mark this role
+  if (!room.world.mission.stepConfirmations[step.id]) {
+    room.world.mission.stepConfirmations[step.id] = freshStepConfirmations();
   }
-  confirmed.add(role);
-  // Mirror to legacy crewReady so older clients still see pills update
-  room.crewReady.add(role);
+  room.world.mission.stepConfirmations[step.id][role] = true;
 
   // Check if all required roles are confirmed
+  const confirmed = room.world.mission.stepConfirmations[step.id];
   const allDone =
-    step.waitFor.length > 0 && step.waitFor.every((r) => confirmed!.has(r));
+    step.waitFor.length > 0 && step.waitFor.every((r) => confirmed[r] === true);
 
-  broadcastGameState(room);
+  broadcastWorld(room);
 
   // If the step requires captain manual advance, do not auto-advance even
   // when all crew confirmations are in. The captain owns the dramatic beat.
@@ -463,48 +531,45 @@ function confirmStep(room: Room, role: RoleKey): boolean {
   return false;
 }
 
-/**
- * Check a requireState predicate against the current room game state.
- * Heading checks are wraparound-aware (350° vs 5° = 15° apart).
- * Default tolerance is 5 if unspecified for `near` predicates.
- */
-function checkRequireState(gs: GameState, req: RequireState): boolean {
-  if (req.speed !== undefined && gs.speed !== req.speed) return false;
+/** requireState predicate against current world state. Wraparound-aware for heading. */
+function checkRequireState(world: World, req: RequireState): boolean {
+  if (req.speed !== undefined && world.submarine.speed !== req.speed) return false;
 
   if (req.heading) {
     const h = req.heading;
-    if (h.equals !== undefined && Math.round(gs.heading) !== h.equals) return false;
+    if (h.equals !== undefined && Math.round(world.submarine.heading) !== h.equals) return false;
     if (h.near !== undefined) {
       const tol = h.tolerance ?? 5;
-      // Wraparound-aware angular distance
-      const diff = Math.abs(((gs.heading - h.near + 540) % 360) - 180);
+      const diff = Math.abs(((world.submarine.heading - h.near + 540) % 360) - 180);
       if (diff > tol) return false;
     }
   }
 
   if (req.depth) {
     const d = req.depth;
-    if (d.equals !== undefined && gs.depth !== d.equals) return false;
+    if (d.equals !== undefined && world.submarine.depth !== d.equals) return false;
     if (d.near !== undefined) {
       const tol = d.tolerance ?? 5;
-      if (Math.abs(gs.depth - d.near) > tol) return false;
+      if (Math.abs(world.submarine.depth - d.near) > tol) return false;
     }
   }
 
   return true;
 }
 
-/** Check the current step's autoConfirmOn hook against an incoming action trigger. */
 function tryAutoConfirm(room: Room, trigger: AutoConfirmTrigger) {
   const step = getCurrentStep(room);
   if (!step?.autoConfirmOn) return;
   if (step.autoConfirmOn.trigger !== trigger) return;
-  // If a state predicate is set, only confirm when the predicate matches.
   if (step.autoConfirmOn.requireState) {
-    if (!checkRequireState(room.gameState, step.autoConfirmOn.requireState)) return;
+    if (!checkRequireState(room.world, step.autoConfirmOn.requireState)) return;
   }
   confirmStep(room, step.autoConfirmOn.role);
 }
+
+// =============================================================================
+// Message handler
+// =============================================================================
 
 function handleMessage(ws: WebSocket, message: string) {
   let msg: Record<string, unknown>;
@@ -520,31 +585,19 @@ function handleMessage(ws: WebSocket, message: string) {
   switch (msg['type']) {
     case 'CREATE_ROOM': {
       const code = generateCode();
-      const newRoom: Room = {
-        code,
-        players: new Map(),
-        gameState: createInitialGameState(),
-        phase: 'LOBBY',
-        gameLoop: null,
-        crewReady: new Set(),
-        activeMissionKey: null,
-        activeStepIdx: 0,
-        stepConfirmations: new Map(),
-        handoffTimer: null,
-        activeLoopedTones: new Set(),
-      };
+      const newRoom = createRoom(code);
+      const role = (msg['role'] as RoleKey) || 'c';
       const playerId = `${Date.now()}-${Math.random()}`;
-      newRoom.players.set(playerId, {
-        ws,
-        name: String(msg['name'] || 'UNKNOWN'),
-        role: (msg['role'] as RoleKey) || 'c',
-        avatar: msg['avatar'] ? String(msg['avatar']) : undefined,
-      });
+      const playerName = String(msg['name'] || 'UNKNOWN');
+      const avatar = msg['avatar'] ? String(msg['avatar']) : undefined;
+
+      seatPlayer(newRoom, role, playerId, playerName, avatar);
       rooms.set(code, newRoom);
       socketToRoom.set(ws, code);
-      socketToPlayerId.set(ws, playerId);
+      socketToRole.set(ws, role);
       ws.send(JSON.stringify({ type: 'ROOM_CREATED', code }));
-      broadcastPlayerList(newRoom);
+      broadcastAvatars(newRoom);
+      broadcastWorld(newRoom);
       break;
     }
 
@@ -558,21 +611,29 @@ function handleMessage(ws: WebSocket, message: string) {
         ws.send(JSON.stringify({ type: 'ERROR', message: 'Game already complete.' }));
         return;
       }
+      const role = (msg['role'] as RoleKey) || 'c';
       const playerId = `${Date.now()}-${Math.random()}`;
-      joinRoom.players.set(playerId, {
-        ws,
-        name: String(msg['name'] || 'UNKNOWN'),
-        role: (msg['role'] as RoleKey) || 'c',
-        avatar: msg['avatar'] ? String(msg['avatar']) : undefined,
-      });
+      const playerName = String(msg['name'] || 'UNKNOWN');
+      const avatar = msg['avatar'] ? String(msg['avatar']) : undefined;
+
+      const seated = seatPlayer(joinRoom, role, playerId, playerName, avatar);
+      if (!seated) {
+        ws.send(JSON.stringify({
+          type: 'ERROR',
+          message: `Role ${role.toUpperCase()} is already taken — pick another station.`,
+        }));
+        return;
+      }
+
       socketToRoom.set(ws, String(msg['code']));
-      socketToPlayerId.set(ws, playerId);
+      socketToRole.set(ws, role);
       ws.send(JSON.stringify({ type: 'ROOM_JOINED', code: msg['code'] }));
+
+      broadcastAvatars(joinRoom);
+      broadcastWorld(joinRoom);
+
       if (joinRoom.phase === 'PLAYING') {
-        broadcastGameState(joinRoom);
         ws.send(JSON.stringify({ type: 'GAME_START' }));
-      } else {
-        broadcastPlayerList(joinRoom);
       }
       break;
     }
@@ -580,16 +641,14 @@ function handleMessage(ws: WebSocket, message: string) {
     case 'START_GAME': {
       if (!room || room.phase !== 'LOBBY') return;
       room.phase = 'PLAYING';
-      room.crewReady.clear();
       broadcastToRoom(room, { type: 'GAME_START' });
-      broadcastGameState(room);
+      broadcastWorld(room);
       startGameLoop(room);
       actionLog(room, 'HMS Leviathan is underway. Battle stations.', 'info');
       // Auto-initialize the training simulation. MT0 hands off to M01.
       if (MISSION_THREADS['MT0']) {
         initMission(room, 'MT0');
       } else if (MISSION_THREADS['M01']) {
-        // Fallback if MT0 is not in the registry for some reason
         initMission(room, 'M01');
       }
       break;
@@ -602,19 +661,40 @@ function handleMessage(ws: WebSocket, message: string) {
 
     case 'SONAR_PING': {
       if (!room) return;
-      const gs = room.gameState;
-      gs.enemies.forEach((enemy) => {
-        if (!enemy.destroyed) {
-          enemy.detected = true;
-          enemy.strength = Math.max(0.3, 1 - enemy.range * 0.7);
-          if (enemy.range < 0.15) {
-            enemy.identified = true;
+      const w = room.world;
+      const detectRangeKm = detectionRangeKm(w.systems.sonar.powerLevel);
+      // Brief mode flip for the audio feedback / visual ping
+      w.systems.sonar.mode = 'ACTIVE';
+      let newlyDetected = 0;
+      for (const contact of w.contacts) {
+        if (contact.destroyed) continue;
+        // Distance from sub to contact in km — use absolute positions
+        const dx = contact.position.x - w.submarine.position.x;
+        const dy = contact.position.y - w.submarine.position.y;
+        const distKm = Math.sqrt(dx * dx + dy * dy);
+        if (distKm <= detectRangeKm) {
+          if (!contact.detected) newlyDetected++;
+          contact.detected = true;
+          contact.strength = Math.max(0.3, 1 - (distKm / TACTICAL_MAX_KM) * 0.7);
+          if (distKm < 9) {
+            contact.identified = true;
           }
         }
-      });
-      const detected = gs.enemies.filter((e) => e.detected && !e.destroyed).length;
-      broadcastGameState(room);
-      actionLog(room, `Sonar PING — ${detected} contact${detected !== 1 ? 's' : ''} detected.`, 'info');
+      }
+      const totalDetected = w.contacts.filter((c) => c.detected && !c.destroyed).length;
+      broadcastWorld(room);
+      actionLog(
+        room,
+        `Sonar PING — ${totalDetected} contact${totalDetected !== 1 ? 's' : ''} detected.`,
+        'info',
+      );
+      // Sonar returns to passive after the ping echoes
+      setTimeout(() => {
+        if (room.world.systems.sonar.mode === 'ACTIVE') {
+          room.world.systems.sonar.mode = 'PASSIVE';
+          broadcastWorld(room);
+        }
+      }, 1500);
       tryAutoConfirm(room, 'SONAR_PING');
       break;
     }
@@ -623,27 +703,28 @@ function handleMessage(ws: WebSocket, message: string) {
       if (!room) return;
       let h = Math.round(Number(msg['heading'])) % 360;
       if (h < 0) h += 360;
-      room.gameState.heading = h;
-      broadcastGameState(room);
+      room.world.submarine.heading = h;
+      broadcastWorld(room);
       tryAutoConfirm(room, 'SET_HEADING');
       break;
     }
 
     case 'SET_DEPTH': {
       if (!room) return;
-      room.gameState.depth = Math.max(18, Math.min(300, Number(msg['depth'])));
-      broadcastGameState(room);
+      const requestedDepth = Number(msg['depth']);
+      room.world.submarine.depth = Math.max(0, Math.min(MAX_DEPTH, requestedDepth));
+      broadcastWorld(room);
       tryAutoConfirm(room, 'SET_DEPTH');
       break;
     }
 
     case 'SET_SPEED': {
       if (!room) return;
-      const validSpeeds: Speed[] = ['STOP', '1/3', '2/3', 'FULL'];
+      const validSpeeds: Speed[] = ['STOP', '1/3', '2/3', 'FULL', 'FLANK', 'REVERSE'];
       const spd = msg['speed'] as Speed;
       if (validSpeeds.includes(spd)) {
-        room.gameState.speed = spd;
-        broadcastGameState(room);
+        room.world.submarine.speed = spd;
+        broadcastWorld(room);
         actionLog(room, `Navigator — Speed set to ${spd}.`, 'info');
         tryAutoConfirm(room, 'SET_SPEED');
       }
@@ -652,29 +733,43 @@ function handleMessage(ws: WebSocket, message: string) {
 
     case 'LOCK_TARGET': {
       if (!room) return;
-      // Lock-on is currently a client-side cosmetic; the server uses this
-      // message only as a mission engine trigger. targetId is included in
-      // the message for forward compatibility (a future requireState
-      // predicate could match on locked target type or id) but is unused
-      // here. No game state mutation.
+      const targetId = Number(msg['targetId']);
+      const target = room.world.contacts.find((c) => c.id === targetId && !c.destroyed);
+      if (target) {
+        room.world.systems.weapons.locked = true;
+        room.world.systems.weapons.lockedContactId = targetId;
+        broadcastWorld(room);
+      }
       tryAutoConfirm(room, 'WEAPONS_LOCK');
       break;
     }
 
     case 'FIRE_TORPEDO': {
       if (!room) return;
-      const gs = room.gameState;
-      if (gs.torps <= 0) {
+      const w = room.world;
+      if (w.systems.weapons.torpedoesLoaded <= 0) {
         ws.send(JSON.stringify({ type: 'ERROR', message: 'No torpedoes loaded.' }));
         return;
       }
-      gs.torps--;
-      const target = gs.enemies.find((e) => e.id === Number(msg['targetId']) && !e.destroyed);
+      w.systems.weapons.torpedoesLoaded--;
+      const target = w.contacts.find(
+        (c) => c.id === Number(msg['targetId']) && !c.destroyed,
+      );
       if (target) {
-        const hitChance = Math.max(0.45, 0.93 - target.range * 0.65);
+        // Compute distance for hit chance — closer = more accurate
+        const dx = target.position.x - w.submarine.position.x;
+        const dy = target.position.y - w.submarine.position.y;
+        const distKm = Math.sqrt(dx * dx + dy * dy);
+        const rangeFrac = Math.min(1, distKm / TACTICAL_MAX_KM);
+        const hitChance = Math.max(0.45, 0.93 - rangeFrac * 0.65);
         const hit = Math.random() < hitChance;
         if (hit) {
           target.destroyed = true;
+          // Clear lock if we locked this target
+          if (w.systems.weapons.lockedContactId === target.id) {
+            w.systems.weapons.locked = false;
+            w.systems.weapons.lockedContactId = null;
+          }
           broadcastToRoom(room, {
             type: 'TORPEDO_HIT',
             targetId: target.id,
@@ -696,7 +791,7 @@ function handleMessage(ws: WebSocket, message: string) {
         broadcastToRoom(room, { type: 'TORPEDO_MISS' });
         actionLog(room, 'TORPEDO MISS — no valid target.', 'warn');
       }
-      broadcastGameState(room);
+      broadcastWorld(room);
       tryAutoConfirm(room, 'FIRE_TORPEDO');
       break;
     }
@@ -706,8 +801,11 @@ function handleMessage(ws: WebSocket, message: string) {
       actionLog(room, 'Engineer — Hull repair sequence started...', 'info');
       setTimeout(() => {
         if (!room || room.phase !== 'PLAYING') return;
-        room.gameState.hull = Math.min(100, room.gameState.hull + 15);
-        broadcastGameState(room);
+        room.world.submarine.hullIntegrity = Math.min(
+          100,
+          room.world.submarine.hullIntegrity + 15,
+        );
+        broadcastWorld(room);
         actionLog(room, 'Engineer — Hull repair complete. +15% integrity.', 'info');
       }, 3000);
       break;
@@ -715,75 +813,56 @@ function handleMessage(ws: WebSocket, message: string) {
 
     case 'REARM_TORPS': {
       if (!room) return;
-      const gs = room.gameState;
-      if (gs.torpReserve <= 0) {
+      const w = room.world;
+      if (w.systems.weapons.torpedoReserve <= 0) {
         ws.send(JSON.stringify({ type: 'ERROR', message: 'No reserve torpedoes.' }));
         return;
       }
-      const toLoad = Math.min(gs.torpReserve, 6 - gs.torps);
+      const toLoad = Math.min(w.systems.weapons.torpedoReserve, 6 - w.systems.weapons.torpedoesLoaded);
       if (toLoad === 0) {
         ws.send(JSON.stringify({ type: 'ERROR', message: 'All tubes already loaded.' }));
         return;
       }
-      gs.torpReserve -= toLoad;
-      gs.torps += toLoad;
-      broadcastGameState(room);
-      actionLog(room, `Engineer — Torpedoes rearmed. ${gs.torps} tubes loaded.`, 'info');
+      w.systems.weapons.torpedoReserve -= toLoad;
+      w.systems.weapons.torpedoesLoaded += toLoad;
+      broadcastWorld(room);
+      actionLog(
+        room,
+        `Engineer — Torpedoes rearmed. ${w.systems.weapons.torpedoesLoaded} tubes loaded.`,
+        'info',
+      );
       break;
     }
 
     case 'SET_COOLING': {
       if (!room) return;
-      room.gameState.coolingRods = Math.max(0, Math.min(100, Number(msg['level'])));
-      broadcastGameState(room);
+      room.world.systems.reactor.coolingLevel = Math.max(0, Math.min(100, Number(msg['level'])));
+      broadcastWorld(room);
       break;
     }
 
     case 'CREW_READY': {
       if (!room) return;
-      const playerId = socketToPlayerId.get(ws);
-      if (!playerId) return;
-      const player = room.players.get(playerId);
-      if (!player) return;
-
+      const found = playerFromSocket(ws);
+      if (!found) return;
+      const { role, member } = found;
       actionLog(
         room,
-        `${player.name} (${player.role.toUpperCase()}) reports READY.`,
-        'info'
+        `${member.playerName} (${role.toUpperCase()}) reports READY.`,
+        'info',
       );
-
-      // If a mission thread is active, use the engine.
+      // Mission engine handles the confirmation if a mission is active.
+      // Without an active mission, CREW_READY is a no-op (no legacy fallback).
       if (getActiveThread(room)) {
-        confirmStep(room, player.role);
-        break;
+        confirmStep(room, role);
       }
-
-      // Legacy fallback: no active thread — use old "all roles ready" behavior
-      room.crewReady.add(player.role);
-      const presentRoles = new Set(
-        Array.from(room.players.values()).map((p) => p.role)
-      );
-      const allReady = Array.from(presentRoles).every((r) =>
-        room.crewReady.has(r)
-      );
-      if (allReady && presentRoles.size > 0) {
-        room.gameState.missionStep++;
-        room.crewReady.clear();
-        broadcastToRoom(room, {
-          type: 'MISSION_STEP',
-          missionStep: room.gameState.missionStep,
-        });
-      }
-      broadcastGameState(room);
       break;
     }
 
     case 'START_MISSION': {
       if (!room) return;
-      const playerId = socketToPlayerId.get(ws);
-      const player = playerId ? room.players.get(playerId) : undefined;
-      // Captain-only — non-captains are silently ignored
-      if (!player || player.role !== 'c') return;
+      const found = playerFromSocket(ws);
+      if (!found || found.role !== 'c') return;
       const key = String(msg['missionKey'] || '');
       if (!key) return;
       initMission(room, key);
@@ -792,9 +871,8 @@ function handleMessage(ws: WebSocket, message: string) {
 
     case 'CAPTAIN_ADVANCE_STEP': {
       if (!room) return;
-      const playerId = socketToPlayerId.get(ws);
-      const player = playerId ? room.players.get(playerId) : undefined;
-      if (!player || player.role !== 'c') return;
+      const found = playerFromSocket(ws);
+      if (!found || found.role !== 'c') return;
       if (!getActiveThread(room)) return;
       advanceStep(room);
       break;
@@ -802,10 +880,8 @@ function handleMessage(ws: WebSocket, message: string) {
 
     case 'MISSION_BRIEF_DISMISS': {
       if (!room) return;
-      const playerId = socketToPlayerId.get(ws);
-      const player = playerId ? room.players.get(playerId) : undefined;
-      // Captain-only — non-captains are silently ignored
-      if (!player || player.role !== 'c') return;
+      const found = playerFromSocket(ws);
+      if (!found || found.role !== 'c') return;
       const thread = getActiveThread(room);
       if (!thread) return;
       broadcastToRoom(room, {
@@ -814,22 +890,42 @@ function handleMessage(ws: WebSocket, message: string) {
       });
       break;
     }
+
+    case 'DISMISS_ALERT': {
+      if (!room) return;
+      const alertId = String(msg['alertId'] || '');
+      const alert = room.world.alerts.find((a) => a.id === alertId);
+      if (!alert) return;
+      // Critical alert types cannot be client-dismissed (per CLAUDE.md / Q-G).
+      if (alert.type === 'REACTOR_CRITICAL' || alert.type === 'TORPEDO_INCOMING') return;
+      alert.dismissed = true;
+      broadcastWorld(room);
+      break;
+    }
   }
 }
 
 function handleDisconnect(ws: WebSocket) {
   const roomCode = socketToRoom.get(ws);
-  const playerId = socketToPlayerId.get(ws);
-  if (!roomCode || !playerId) return;
+  const role = socketToRole.get(ws);
+  if (!roomCode || !role) return;
 
   const room = rooms.get(roomCode);
   if (!room) return;
 
-  room.players.delete(playerId);
+  unseatPlayer(room, role);
   socketToRoom.delete(ws);
-  socketToPlayerId.delete(ws);
+  socketToRole.delete(ws);
 
-  if (room.players.size === 0) {
+  // Are any seats still connected?
+  const stillConnected =
+    room.world.crew.c.connected ||
+    room.world.crew.n.connected ||
+    room.world.crew.s.connected ||
+    room.world.crew.e.connected ||
+    room.world.crew.w.connected;
+
+  if (!stillConnected) {
     stopGameLoop(room);
     if (room.handoffTimer) {
       clearTimeout(room.handoffTimer);
@@ -838,7 +934,8 @@ function handleDisconnect(ws: WebSocket) {
     room.activeLoopedTones.clear();
     rooms.delete(roomCode);
   } else {
-    broadcastPlayerList(room);
+    broadcastAvatars(room);
+    broadcastWorld(room);
   }
 }
 

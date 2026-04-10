@@ -36,7 +36,7 @@ const STATIONS: { key: RoleKey; icon: string; label: string }[] = [
 export default function GameScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { phase, gameState, crisis, voteState, leaveGame, myRole, roomCode } = useGame();
+  const { phase, world, crisis, voteState, leaveGame, myRole, roomCode } = useGame();
   const [activeStation, setActiveStation] = useState<RoleKey>(myRole);
   const [showEndModal, setShowEndModal] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
@@ -158,20 +158,20 @@ export default function GameScreen() {
         <View style={styles.endOverlay}>
           <View style={styles.endCard}>
             <Text style={styles.endTitle}>
-              {phase === 'COMPLETE' && gameState && gameState.hull > 0
+              {phase === 'COMPLETE' && world && world.submarine.hullIntegrity > 0
                 ? 'MISSION\nCOMPLETE'
                 : 'GAME\nOVER'}
             </Text>
-            {gameState && (
+            {world && (
               <View style={styles.endStats}>
                 <View style={styles.endStat}>
-                  <Text style={styles.endStatVal}>{Math.round(gameState.hull)}%</Text>
+                  <Text style={styles.endStatVal}>{Math.round(world.submarine.hullIntegrity)}%</Text>
                   <Text style={styles.endStatLbl}>HULL</Text>
                 </View>
                 <View style={styles.endStat}>
                   <Text style={styles.endStatVal}>
-                    {gameState.enemies.filter((e) => e.destroyed).length}/
-                    {gameState.enemies.length}
+                    {world.contacts.filter((c) => c.destroyed).length}/
+                    {world.contacts.length}
                   </Text>
                   <Text style={styles.endStatLbl}>TARGETS</Text>
                 </View>

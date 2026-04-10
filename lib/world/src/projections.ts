@@ -102,6 +102,41 @@ export function rangeFracToKm(rangeFrac: number): number {
   return rangeFrac * TACTICAL_MAX_KM;
 }
 
+/**
+ * Format a bearing in degrees as a 3-digit zero-padded string with degree
+ * sign, e.g. 34 → "034°", 217 → "217°", 5 → "005°".
+ *
+ * Used by HUDs and target lists across every station.
+ */
+export function bearingLabel(deg: number): string {
+  const d = Math.round(deg) % 360;
+  const safe = d < 0 ? d + 360 : d;
+  return `${safe < 10 ? '00' : safe < 100 ? '0' : ''}${safe}\u00B0`;
+}
+
+/**
+ * Compute torpedo hit probability percentage from a contact's range fraction.
+ *
+ * Game balance formula:
+ *   hitPct = max(45, round((0.93 - rangeFrac * 0.65) * 100))
+ *
+ * At range 0   → 93% (point-blank)
+ * At range 0.5 → 61%
+ * At range 1.0 → 45% (floor)
+ *
+ * The 45% floor prevents long-range shots from feeling pointless. The
+ * 93% ceiling reflects that even point-blank shots have some failure
+ * chance (target evasion, faulty fish, etc.).
+ *
+ * NOT a pure projection — this is game-balance logic. Lives here because
+ * it's used by both Captain (for displaying "% hit chance" on the radar)
+ * and Weapons (for the FIRE button hit indicator), and we want a single
+ * source of truth for the formula.
+ */
+export function hitProbability(rangeFrac: number): number {
+  return Math.max(45, Math.round((0.93 - rangeFrac * 0.65) * 100));
+}
+
 // -----------------------------------------------------------------------------
 // Derived zone projections
 // -----------------------------------------------------------------------------

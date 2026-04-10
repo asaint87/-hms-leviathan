@@ -6,17 +6,24 @@ import {
   TouchableOpacity,
   Platform,
 } from 'react-native';
-import { useGame, Enemy } from '@/contexts/GameContext';
+import { useGame } from '@/contexts/GameContext';
+import { Contact, bearingRangeToOffset, bearingLabel, rangeFracToKm } from '@workspace/world';
 import { Colors } from '@/constants/Colors';
-import { bearingRangeToOffset, bearingLabel, rangeKm } from '@/utils/bearingMath';
 import { playSound } from '@/utils/sounds';
 import * as Haptics from 'expo-haptics';
 import { MissionTaskCard } from '@/components/game/MissionTaskCard';
 
+// Backwards-compat alias — most of this file uses `Enemy` as a type name
+// from the pre-migration era. The new canonical type is Contact.
+type Enemy = Contact;
+
+// Local alias for the rangeKm helper renamed in @workspace/world
+const rangeKm = rangeFracToKm;
+
 type PingMode = 'active' | 'passive';
 
 export function SonarStation() {
-  const { gameState, sonarPing } = useGame();
+  const { world, sonarPing } = useGame();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const waterfallRef = useRef<HTMLCanvasElement | null>(null);
   const sweepRef = useRef(0);
@@ -31,9 +38,9 @@ export function SonarStation() {
   const [acoustics, setAcoustics] = useState<{ low: number; mid: number; high: number } | null>(null);
   const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const gs = gameState;
+  const gs = world;
 
-  const contacts = gs?.enemies.filter((e) => e.detected && !e.destroyed) ?? [];
+  const contacts = gs?.contacts.filter((e) => e.detected && !e.destroyed) ?? [];
 
   // Sonar canvas draw loop (web only)
   useEffect(() => {
@@ -140,8 +147,8 @@ export function SonarStation() {
       }
 
       // Contacts
-      const heading = gs?.heading ?? 0;
-      const liveDetected = gs?.enemies.filter((e) => e.detected && !e.destroyed) ?? [];
+      const heading = gs?.submarine.heading ?? 0;
+      const liveDetected = gs?.contacts.filter((e) => e.detected && !e.destroyed) ?? [];
       liveDetected.forEach((c) => {
         const off = bearingRangeToOffset(c.bearing - heading, Math.min(c.range, 0.92));
         const ex = cx + off.x * r;
@@ -151,7 +158,7 @@ export function SonarStation() {
         // tactical contacts. Slower pulse, softer edges, "???" label.
         if (c.style === 'pulse-slow') {
           const t = Date.now() * 0.0008;
-          const teal = c.col || '#00e5cc';
+          const teal = c.color || '#00e5cc';
 
           // Outer halo — large radial gradient, very faint
           const haloR = 22 + Math.sin(t) * 4;
@@ -205,7 +212,7 @@ export function SonarStation() {
         }
 
         // Normal tactical contact rendering
-        const col = c.identified ? c.col || Colors.red : '#ffb300';
+        const col = c.identified ? c.color || Colors.red : '#ffb300';
         ctx.beginPath(); ctx.arc(ex, ey, 5, 0, Math.PI * 2);
         ctx.fillStyle = col + '33'; ctx.fill();
         ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
@@ -292,7 +299,7 @@ export function SonarStation() {
     // Update acoustics after delay
     setTimeout(() => {
       setPinging(false);
-      const det = gs?.enemies.filter((e) => e.detected && !e.destroyed) ?? [];
+      const det = gs?.contacts.filter((e) => e.detected && !e.destroyed) ?? [];
       if (det.length > 0) {
         const strongest = det.reduce((a, b) => ((a.strength || 0) > (b.strength || 0) ? a : b));
         const s = strongest.strength || 0.5;
@@ -338,7 +345,7 @@ export function SonarStation() {
     );
   }
 
-  const undetected = gs.enemies.filter((e) => !e.detected && !e.destroyed);
+  const undetected = gs.contacts.filter((e) => !e.detected && !e.destroyed);
 
   return (
     <View style={styles.root}>

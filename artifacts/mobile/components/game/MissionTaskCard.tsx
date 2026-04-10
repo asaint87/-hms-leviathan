@@ -19,12 +19,15 @@ import * as Haptics from 'expo-haptics';
 export function MissionTaskCard() {
   const {
     activeMissionThread,
-    activeStepIdx,
-    stepConfirmations,
+    world,
     myRole,
     reportReady,
     captainAdvanceStep,
   } = useGame();
+
+  // Per the World State Rule, mission step + confirmations live on world.mission
+  const activeStepIdx = world?.mission.currentStep ?? 0;
+  const stepConfirmations = world?.mission.stepConfirmations ?? {};
 
   const [reported, setReported] = useState(false);
 
@@ -42,14 +45,14 @@ export function MissionTaskCard() {
   const myTask = step.crewTasks[myRole];
   const roleColor = Colors.roles[myRole]?.primary ?? Colors.amber;
 
-  // Confirmations for the current step
-  const confirmedRoles = stepConfirmations[step.id] ?? [];
-  const iAmConfirmed = confirmedRoles.includes(myRole);
+  // Confirmations for the current step (Record<RoleKey, boolean>)
+  const confirmed = stepConfirmations[step.id] ?? {};
+  const iAmConfirmed = confirmed[myRole] === true;
 
   // Pills only show for roles in waitFor. Empty waitFor = no pills
   // (e.g. final mission step with captain-only manual advance).
   const pillRoles = step.waitFor;
-  const pendingCount = pillRoles.filter((r) => !confirmedRoles.includes(r)).length;
+  const pendingCount = pillRoles.filter((r) => confirmed[r] !== true).length;
 
   const handleReady = () => {
     reportReady();
@@ -96,7 +99,7 @@ export function MissionTaskCard() {
       {pillRoles.length > 0 && (
         <View style={styles.pillsRow}>
           {pillRoles.map((role) => {
-            const ready = confirmedRoles.includes(role);
+            const ready = confirmed[role] === true;
             const rc = Colors.roles[role]?.primary ?? '#555';
             return (
               <View

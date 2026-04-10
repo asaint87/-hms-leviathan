@@ -169,6 +169,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../lib/db
+      '@workspace/world':
+        specifier: workspace:*
+        version: link:../../lib/world
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
@@ -276,6 +279,9 @@ importers:
       '@workspace/api-client-react':
         specifier: workspace:*
         version: link:../../lib/api-client-react
+      '@workspace/world':
+        specifier: workspace:*
+        version: link:../../lib/world
       babel-plugin-react-compiler:
         specifier: ^19.0.0-beta-e993439-20250117
         version: 19.0.0-beta-ebf51a3-20250411

@@ -7,12 +7,16 @@ import {
   ScrollView,
   Platform,
 } from 'react-native';
-import { useGame, Enemy, TorpedoEvent } from '@/contexts/GameContext';
+import { useGame, TorpedoEvent } from '@/contexts/GameContext';
+import { Contact, bearingLabel, rangeFracToKm, hitProbability } from '@workspace/world';
 import { Colors } from '@/constants/Colors';
-import { bearingLabel, rangeKm, hitProbability } from '@/utils/bearingMath';
 import { playSound } from '@/utils/sounds';
 import * as Haptics from 'expo-haptics';
 import { MissionTaskCard } from '@/components/game/MissionTaskCard';
+
+// Backwards-compat alias — file uses `Enemy` as type name; canonical is Contact
+type Enemy = Contact;
+const rangeKm = rangeFracToKm;
 
 type VisionMode = 'standard' | 'thermal' | 'nightops';
 
@@ -47,7 +51,7 @@ let _dragStartX = 0;
 let _dragStartBearing = 0;
 
 export function WeaponsStation() {
-  const { gameState, fireTorpedo, lockTarget, lastTorpedoEvent } = useGame();
+  const { world, fireTorpedo, lockTarget, lastTorpedoEvent } = useGame();
   const [selectedTarget, setSelectedTarget] = useState<number | null>(null);
   const [firing, setFiring] = useState(false);
   const [visionMode, setVisionMode] = useState<VisionMode>('standard');
@@ -59,7 +63,7 @@ export function WeaponsStation() {
   const lockProgressRef = useRef(0);
   const isLockedRef = useRef(false);
 
-  const gs = gameState;
+  const gs = world;
 
   // React to torpedo events from server (triggers explosions for ALL players)
   useEffect(() => {
@@ -80,8 +84,8 @@ export function WeaponsStation() {
 
   // Sync view bearing from sub heading initially
   useEffect(() => {
-    if (gs) { _viewBearing = gs.heading; setViewBearing(gs.heading); }
-  }, [gs?.heading]);
+    if (gs) { _viewBearing = gs.submarine.heading; setViewBearing(gs.submarine.heading); }
+  }, [gs?.submarine.heading]);
 
   // Lock-on timer when target selected
   useEffect(() => {
@@ -259,7 +263,7 @@ export function WeaponsStation() {
       // Pulse-slow contacts (e.g. MT0 deep signal) are excluded — narrative is
       // "below test depth," so they're audible on sonar but invisible through
       // the periscope. They still appear in the target list on the right.
-      const liveEnemies = gs?.enemies.filter(
+      const liveEnemies = gs?.contacts.filter(
         (e) => !e.destroyed && e.detected && e.style !== 'pulse-slow'
       ) ?? [];
       liveEnemies.forEach((e) => {
@@ -507,11 +511,11 @@ export function WeaponsStation() {
     );
   }
 
-  const liveEnemies = gs.enemies.filter((e) => !e.destroyed);
+  const liveEnemies = gs.contacts.filter((e) => !e.destroyed);
   const detectedEnemies = liveEnemies.filter((e) => e.detected);
   const target = selectedTarget !== null ? liveEnemies.find((e) => e.id === selectedTarget) : null;
   const hitPct = target ? hitProbability(target.range) : 0;
-  const canFire = gs.torps > 0 && selectedTarget !== null && target && !firing && isLockedRef.current;
+  const canFire = gs.systems.weapons.torpedoesLoaded > 0 && selectedTarget !== null && target && !firing && isLockedRef.current;
 
   const handleFire = useCallback(() => {
     if (!canFire || selectedTarget === null || !target) return;
@@ -544,7 +548,7 @@ export function WeaponsStation() {
     setTimeout(() => {
       setFiring(false);
       // Check if target was destroyed by server state update
-      const alive = gs.enemies.find((e) => e.id === selectedTarget && !e.destroyed);
+      const alive = gs.contacts.find((e) => e.id === selectedTarget && !e.destroyed);
       if (!alive) setSelectedTarget(null);
     }, 2500);
   }, [canFire, selectedTarget, target, gs, fireTorpedo]);
@@ -556,7 +560,7 @@ export function WeaponsStation() {
         <View style={styles.periHeader}>
           <View style={styles.periscopeBadge}>
             <View style={styles.periscopeDot} />
-            <Text style={styles.periscopeBadgeText}>PERISCOPE \u2014 {gs.depth}m</Text>
+            <Text style={styles.periscopeBadgeText}>PERISCOPE \u2014 {gs.submarine.depth}m</Text>
           </View>
           <View style={{ flex: 1 }} />
           {(['standard', 'thermal', 'nightops'] as const).map((m) => (
@@ -602,7 +606,7 @@ export function WeaponsStation() {
           </View>
           <View style={styles.hudBL}>
             <Text style={styles.hudLbl}>DEPTH</Text>
-            <Text style={[styles.hudVal, { color: Colors.blue }]}>{gs.depth}m</Text>
+            <Text style={[styles.hudVal, { color: Colors.blue }]}>{gs.submarine.depth}m</Text>
           </View>
           <View style={styles.hudBR}>
             <Text style={styles.hudLbl}>STATUS</Text>
@@ -653,15 +657,15 @@ export function WeaponsStation() {
             <View style={styles.torpRow}>
               <View style={styles.torpTubes}>
                 {Array.from({ length: 6 }).map((_, i) => (
-                  <View key={i} style={[styles.torpTube, i < gs.torps && styles.torpTubeLoaded]}>
-                    {i < gs.torps && <View style={styles.torpTubeInner} />}
+                  <View key={i} style={[styles.torpTube, i < gs.systems.weapons.torpedoesLoaded && styles.torpTubeLoaded]}>
+                    {i < gs.systems.weapons.torpedoesLoaded && <View style={styles.torpTubeInner} />}
                   </View>
                 ))}
               </View>
               <View style={styles.torpCounts}>
-                <Text style={styles.torpCountVal}>{gs.torps}</Text>
+                <Text style={styles.torpCountVal}>{gs.systems.weapons.torpedoesLoaded}</Text>
                 <Text style={styles.torpCountLbl}>LOADED</Text>
-                <Text style={styles.torpReserveLbl}>+{gs.torpReserve} RESERVE</Text>
+                <Text style={styles.torpReserveLbl}>+{gs.systems.weapons.torpedoReserve} RESERVE</Text>
               </View>
             </View>
           </View>
@@ -673,7 +677,7 @@ export function WeaponsStation() {
             activeOpacity={0.85}
           >
             <Text style={styles.fireBtnLabel}>
-              {gs.torps === 0 ? 'NO TORPEDOES' : firing ? '\u21BB  TORPEDO AWAY...' : '\uD83D\uDE80 FIRE TORPEDO'}
+              {gs.systems.weapons.torpedoesLoaded === 0 ? 'NO TORPEDOES' : firing ? '\u21BB  TORPEDO AWAY...' : '\uD83D\uDE80 FIRE TORPEDO'}
             </Text>
           </TouchableOpacity>
 
@@ -843,10 +847,10 @@ function TargetRow({ enemy, selected, viewBearing, onSelect }: {
   // tactical target. They are NOT visible through the periscope visual.
   const isPulseSlow = enemy.style === 'pulse-slow';
   const dotColor = isPulseSlow
-    ? (enemy.col || '#00e5cc')
+    ? (enemy.color || '#00e5cc')
     : (enemy.identified ? Colors.red : Colors.amber);
   const nameColor = isPulseSlow
-    ? (enemy.col || '#00e5cc')
+    ? (enemy.color || '#00e5cc')
     : enemy.detected ? (enemy.identified ? '#ccc' : '#886600') : Colors.textDim;
   return (
     <TouchableOpacity

@@ -4,15 +4,15 @@ import { useGame } from '@/contexts/GameContext';
 import { Colors } from '@/constants/Colors';
 
 export function HullBar({ roomCode }: { roomCode?: string | null }) {
-  const { gameState } = useGame();
+  const { world } = useGame();
 
-  const hull = gameState?.hull ?? 100;
-  const heading = gameState?.heading ?? 0;
-  const depth = gameState?.depth ?? 142;
-  const speed = gameState?.speed ?? 'STOP';
-  const torps = gameState?.torps ?? 0;
-  const torpReserve = gameState?.torpReserve ?? 0;
-  const reactorTemp = gameState?.reactorTemp ?? 280;
+  const hull = world?.submarine.hullIntegrity ?? 100;
+  const heading = world?.submarine.heading ?? 0;
+  const depth = world?.submarine.depth ?? 142;
+  const speed = world?.submarine.speed ?? 'STOP';
+  const torps = world?.systems.weapons.torpedoesLoaded ?? 0;
+  const torpReserve = world?.systems.weapons.torpedoReserve ?? 0;
+  const reactorTemp = world?.systems.reactor.temp ?? 280;
 
   const hullColor = hull > 60 ? Colors.green : hull > 30 ? Colors.amber : Colors.red;
 

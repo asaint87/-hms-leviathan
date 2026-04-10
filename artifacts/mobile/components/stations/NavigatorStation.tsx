@@ -7,31 +7,36 @@ import {
   PanResponder,
   Dimensions,
 } from 'react-native';
-import { useGame, Speed } from '@/contexts/GameContext';
+import { useGame } from '@/contexts/GameContext';
+import { Speed, bearingLabel } from '@workspace/world';
 import { Colors } from '@/constants/Colors';
-import { bearingLabel } from '@/utils/bearingMath';
 import * as Haptics from 'expo-haptics';
 import { MissionTaskCard } from '@/components/game/MissionTaskCard';
 
+// Speed UI surface — currently only the 4 ahead speeds are buttons.
+// FLANK and REVERSE exist in the world type but aren't in the dial yet;
+// they'll appear when missions need them.
 const SPEEDS: Speed[] = ['STOP', '1/3', '2/3', 'FULL'];
 const SPEED_COLORS: Record<Speed, string> = {
   STOP: Colors.textDim,
   '1/3': Colors.green,
   '2/3': Colors.amber,
   FULL: Colors.red,
+  FLANK: Colors.red,
+  REVERSE: Colors.textDim,
 };
 
 const DEPTH_PRESETS = [18, 50, 100, 150, 200, 250, 300];
 
 export function NavigatorStation() {
-  const { gameState, setHeading, setDepth, setSpeed } = useGame();
-  const gs = gameState;
-  const [localHeading, setLocalHeading] = useState(gs?.heading ?? 0);
+  const { world, setHeading, setDepth, setSpeed } = useGame();
+  const sub = world?.submarine;
+  const [localHeading, setLocalHeading] = useState(sub?.heading ?? 0);
   const draggingRef = useRef(false);
   const dialRef = useRef<View>(null);
   const centerRef = useRef({ x: 0, y: 0 });
 
-  if (!gs) {
+  if (!sub || !world) {
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyText}>Awaiting game state...</Text>
@@ -162,10 +167,10 @@ export function NavigatorStation() {
       <View style={styles.rightPanel}>
         <MissionTaskCard />
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>DEPTH CONTROL — {gs.depth}m</Text>
+          <Text style={styles.cardLabel}>DEPTH CONTROL — {sub.depth}m</Text>
           <View style={styles.depthGrid}>
             {DEPTH_PRESETS.map((d) => {
-              const active = Math.abs(gs.depth - d) < 5;
+              const active = Math.abs(sub.depth - d) < 5;
               return (
                 <TouchableOpacity
                   key={d}
@@ -192,10 +197,10 @@ export function NavigatorStation() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>ENGINE SPEED — {gs.speed}</Text>
+          <Text style={styles.cardLabel}>ENGINE SPEED — {sub.speed}</Text>
           <View style={styles.speedRow}>
             {SPEEDS.map((s) => {
-              const active = gs.speed === s;
+              const active = sub.speed === s;
               const c = SPEED_COLORS[s];
               return (
                 <TouchableOpacity
@@ -224,20 +229,20 @@ export function NavigatorStation() {
           <Text style={styles.cardLabel}>POSITION</Text>
           <View style={styles.posGrid}>
             <View style={styles.posStat}>
-              <Text style={styles.posVal}>{bearingLabel(gs.heading)}</Text>
+              <Text style={styles.posVal}>{bearingLabel(sub.heading)}</Text>
               <Text style={styles.posLbl}>COURSE</Text>
             </View>
             <View style={styles.posStat}>
-              <Text style={styles.posVal}>{gs.depth}m</Text>
+              <Text style={styles.posVal}>{sub.depth}m</Text>
               <Text style={styles.posLbl}>DEPTH</Text>
             </View>
             <View style={styles.posStat}>
-              <Text style={styles.posVal}>{gs.speed}</Text>
+              <Text style={styles.posVal}>{sub.speed}</Text>
               <Text style={styles.posLbl}>SPEED</Text>
             </View>
             <View style={styles.posStat}>
               <Text style={styles.posVal}>
-                {(gs.subMapX * 600).toFixed(0)}N {(gs.subMapY * 600).toFixed(0)}E
+                {sub.position.x.toFixed(1)} km E · {(-sub.position.y).toFixed(1)} km N
               </Text>
               <Text style={styles.posLbl}>GRID</Text>
             </View>

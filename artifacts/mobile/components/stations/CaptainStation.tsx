@@ -12,18 +12,18 @@ import {
   Easing,
 } from 'react-native';
 import { useGame } from '@/contexts/GameContext';
+import { bearingRangeToOffset, bearingLabel, rangeFracToKm, RoleKey } from '@workspace/world';
 import { Colors } from '@/constants/Colors';
-import { bearingRangeToOffset, bearingLabel, rangeKm } from '@/utils/bearingMath';
 import { ActionLog } from '@/components/game/ActionLog';
 import { MissionTaskCard } from '@/components/game/MissionTaskCard';
 
 const RING_COUNT = 4;
+const ROLES_ORDER: RoleKey[] = ['c', 'n', 's', 'e', 'w'];
 
 export function CaptainStation() {
-  const { gameState, players, actionLog } = useGame();
+  const { world, crewAvatars, actionLog } = useGame();
 
-  const gs = gameState;
-  if (!gs) {
+  if (!world) {
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyText}>Awaiting game state...</Text>
@@ -31,15 +31,24 @@ export function CaptainStation() {
     );
   }
 
-  const enemies = gs.enemies.filter((e) => e.detected && !e.destroyed);
-  const destroyed = gs.enemies.filter((e) => e.destroyed);
-  const remaining = gs.enemies.filter((e) => !e.destroyed);
+  const enemies = world.contacts.filter((e) => e.detected && !e.destroyed);
+  const destroyed = world.contacts.filter((e) => e.destroyed);
+  const remaining = world.contacts.filter((e) => !e.destroyed);
+
+  // Build the seated crew roster from world.crew + crewAvatars cache
+  const seatedCrew = ROLES_ORDER
+    .map((role) => {
+      const member = world.crew[role];
+      if (!member.connected) return null;
+      return { role, name: member.playerName ?? 'CREW', avatar: crewAvatars[role] };
+    })
+    .filter((p): p is { role: RoleKey; name: string; avatar: string | undefined } => p !== null);
 
   return (
     <View style={styles.root}>
       <View style={styles.leftPanel}>
         <View style={styles.radarWrap}>
-          <RadarScope enemies={enemies} heading={gs.heading} />
+          <RadarScope enemies={enemies} heading={world.submarine.heading} />
         </View>
 
         <View style={styles.missionCard}>
@@ -55,17 +64,17 @@ export function CaptainStation() {
             </View>
             <View style={styles.tactStat}>
               <Text style={[styles.tactVal, { color: Colors.orange }]}>
-                {gs.torps}
+                {world.systems.weapons.torpedoesLoaded}
               </Text>
               <Text style={styles.tactLbl}>TORPEDOES</Text>
             </View>
           </View>
 
           <Text style={[styles.cardLabel, { marginTop: 12 }]}>CREW STATUS</Text>
-          {players.map((p, i) => {
-            const c = Colors.roles[p.role as keyof typeof Colors.roles] || Colors.roles.c;
+          {seatedCrew.map((p) => {
+            const c = Colors.roles[p.role] || Colors.roles.c;
             return (
-              <View key={i} style={styles.crewRow}>
+              <View key={p.role} style={styles.crewRow}>
                 {p.avatar ? (
                   <Image source={{ uri: p.avatar }} style={[styles.crewAvatar, { borderColor: c.primary }]} />
                 ) : (
@@ -97,11 +106,7 @@ function RadarScope({
   enemies,
   heading,
 }: {
-  enemies: ReturnType<typeof useGame>['gameState'] extends infer G
-    ? G extends object
-      ? any[]
-      : never
-    : never;
+  enemies: any[]; // Contact[] — typed loosely so the any-typed map iteration in the render still works
   heading: number;
 }) {
   const size = 200;
@@ -146,7 +151,7 @@ function RadarScope({
               key={enemy.id}
               x={x}
               y={y}
-              color={enemy.col || '#00e5cc'}
+              color={enemy.color || '#00e5cc'}
             />
           );
         }

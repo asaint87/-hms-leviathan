@@ -14,14 +14,12 @@ import * as Haptics from 'expo-haptics';
 import { MissionTaskCard } from '@/components/game/MissionTaskCard';
 
 export function EngineerStation() {
-  const { gameState, repairHull, rearmTorps, setCooling } = useGame();
+  const { world, repairHull, rearmTorps, setCooling } = useGame();
   const [repairing, setRepairing] = useState(false);
   const [rearming, setRearming] = useState(false);
-  const [localCooling, setLocalCooling] = useState(gameState?.coolingRods ?? 50);
+  const [localCooling, setLocalCooling] = useState(world?.systems.reactor.coolingLevel ?? 50);
 
-  const gs = gameState;
-
-  if (!gs) {
+  if (!world) {
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyText}>Awaiting game state...</Text>
@@ -29,15 +27,19 @@ export function EngineerStation() {
     );
   }
 
-  const reactorTemp = gs.reactorTemp;
+  const sub = world.submarine;
+  const systems = world.systems;
+
+  const reactorTemp = systems.reactor.temp;
   const tempPct = Math.max(0, Math.min(100, ((reactorTemp - 180) / (500 - 180)) * 100));
   const tempColor =
     reactorTemp >= 450 ? Colors.red : reactorTemp >= 380 ? Colors.amber : Colors.green;
 
-  const hullColor = gs.hull > 60 ? Colors.green : gs.hull > 30 ? Colors.amber : Colors.red;
+  const hull = sub.hullIntegrity;
+  const hullColor = hull > 60 ? Colors.green : hull > 30 ? Colors.amber : Colors.red;
 
   const handleRepair = () => {
-    if (repairing || gs.hull >= 100) return;
+    if (repairing || hull >= 100) return;
     setRepairing(true);
     playSound('buttonPress');
     repairHull();
@@ -46,7 +48,7 @@ export function EngineerStation() {
   };
 
   const handleRearm = () => {
-    if (rearming || gs.torpReserve <= 0) return;
+    if (rearming || systems.weapons.torpedoReserve <= 0) return;
     setRearming(true);
     rearmTorps();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -96,11 +98,11 @@ export function EngineerStation() {
                   <View
                     style={[
                       styles.smallBarFill,
-                      { width: `${gs.power}%` as any, backgroundColor: Colors.blue },
+                      { width: `${systems.reactor.output}%` as any, backgroundColor: Colors.blue },
                     ]}
                   />
                 </View>
-                <Text style={styles.smallBarVal}>{gs.power}%</Text>
+                <Text style={styles.smallBarVal}>{systems.reactor.output}%</Text>
               </View>
             </View>
           </View>
@@ -136,23 +138,23 @@ export function EngineerStation() {
       <View style={styles.rightPanel}>
         <MissionTaskCard />
         <View style={styles.card}>
-          <Text style={styles.cardLabel}>HULL INTEGRITY — {Math.round(gs.hull)}%</Text>
+          <Text style={styles.cardLabel}>HULL INTEGRITY — {Math.round(hull)}%</Text>
           <View style={styles.hullBarWrap}>
             <View
               style={[
                 styles.hullBarFill,
-                { width: `${gs.hull}%` as any, backgroundColor: hullColor },
+                { width: `${hull}%` as any, backgroundColor: hullColor },
               ]}
             />
           </View>
           <View style={styles.hullDetails}>
             <View style={styles.hullStat}>
-              <Text style={[styles.hullVal, { color: hullColor }]}>{Math.round(gs.hull)}%</Text>
+              <Text style={[styles.hullVal, { color: hullColor }]}>{Math.round(hull)}%</Text>
               <Text style={styles.hullStatLbl}>INTEGRITY</Text>
             </View>
             <View style={styles.hullStat}>
               <Text style={styles.hullVal}>
-                {gs.hull >= 70 ? 'GOOD' : gs.hull >= 40 ? 'DAMAGED' : 'CRITICAL'}
+                {hull >= 70 ? 'GOOD' : hull >= 40 ? 'DAMAGED' : 'CRITICAL'}
               </Text>
               <Text style={styles.hullStatLbl}>STATUS</Text>
             </View>
@@ -160,10 +162,10 @@ export function EngineerStation() {
           <TouchableOpacity
             style={[
               styles.repairBtn,
-              (repairing || gs.hull >= 100) && styles.btnDisabled,
+              (repairing || hull >= 100) && styles.btnDisabled,
             ]}
             onPress={handleRepair}
-            disabled={repairing || gs.hull >= 100}
+            disabled={repairing || hull >= 100}
             activeOpacity={0.8}
           >
             <Text style={styles.repairBtnText}>
@@ -176,12 +178,12 @@ export function EngineerStation() {
           <Text style={styles.cardLabel}>WEAPONS LOADOUT</Text>
           <View style={styles.torpRow}>
             <View style={styles.torpStat}>
-              <Text style={styles.torpVal}>{gs.torps}</Text>
+              <Text style={styles.torpVal}>{systems.weapons.torpedoesLoaded}</Text>
               <Text style={styles.torpLbl}>LOADED</Text>
             </View>
             <View style={styles.torpDivider} />
             <View style={styles.torpStat}>
-              <Text style={styles.torpVal}>{gs.torpReserve}</Text>
+              <Text style={styles.torpVal}>{systems.weapons.torpedoReserve}</Text>
               <Text style={styles.torpLbl}>RESERVE</Text>
             </View>
           </View>
@@ -192,7 +194,7 @@ export function EngineerStation() {
                 key={i}
                 style={[
                   styles.torpTube,
-                  i < gs.torps && styles.torpTubeLoaded,
+                  i < systems.weapons.torpedoesLoaded && styles.torpTubeLoaded,
                 ]}
               >
                 <Text style={styles.torpTubeLabel}>{i + 1}</Text>
@@ -203,10 +205,10 @@ export function EngineerStation() {
           <TouchableOpacity
             style={[
               styles.rearmBtn,
-              (rearming || gs.torpReserve <= 0 || gs.torps >= 6) && styles.btnDisabled,
+              (rearming || systems.weapons.torpedoReserve <= 0 || systems.weapons.torpedoesLoaded >= 6) && styles.btnDisabled,
             ]}
             onPress={handleRearm}
-            disabled={rearming || gs.torpReserve <= 0 || gs.torps >= 6}
+            disabled={rearming || systems.weapons.torpedoReserve <= 0 || systems.weapons.torpedoesLoaded >= 6}
             activeOpacity={0.8}
           >
             <Text style={styles.rearmBtnText}>
@@ -217,21 +219,21 @@ export function EngineerStation() {
 
         <View style={styles.card}>
           <Text style={styles.cardLabel}>SHIP SYSTEMS</Text>
-          {gs.systems.map((sys) => {
-            const statusColor =
-              sys.status === 'ONLINE'
-                ? Colors.green
-                : sys.status === 'DEGRADED'
-                ? Colors.amber
-                : Colors.red;
+          {([
+            { id: 'propulsion', name: 'PROPULSION', online: systems.propulsion.online },
+            { id: 'weapons', name: 'WEAPONS SYS', online: systems.weapons.online },
+            { id: 'sonar', name: 'SONAR ARRAY', online: systems.sonar.online },
+            { id: 'reactor', name: 'REACTOR CORE', online: systems.reactor.zone !== 'MELTDOWN_RISK' },
+            { id: 'hull', name: 'HULL INTEGRITY', online: !systems.hull.breached },
+          ] as const).map((row) => {
+            const statusColor = row.online ? Colors.green : Colors.red;
+            const statusText = row.online ? 'ONLINE' : 'OFFLINE';
             return (
-              <View key={sys.id} style={styles.sysRow}>
-                <View
-                  style={[styles.sysDot, { backgroundColor: statusColor }]}
-                />
-                <Text style={styles.sysName}>{sys.name}</Text>
+              <View key={row.id} style={styles.sysRow}>
+                <View style={[styles.sysDot, { backgroundColor: statusColor }]} />
+                <Text style={styles.sysName}>{row.name}</Text>
                 <Text style={[styles.sysStatus, { color: statusColor }]}>
-                  {sys.status}
+                  {statusText}
                 </Text>
               </View>
             );
